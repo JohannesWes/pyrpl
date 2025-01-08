@@ -227,6 +227,7 @@ reg           ack_dly ;
 
 always @(posedge dac_clk_i)
 if (dac_rstn_i == 1'b0) begin
+   // Set default values for ASG registers
    trig_a_sw   <=  1'b0    ;
    trig_a_src  <=  3'h0    ;
    set_a_amp   <= 14'h2000 ;
@@ -260,6 +261,7 @@ if (dac_rstn_i == 1'b0) begin
    ren_dly     <=  3'h0    ;
    ack_dly     <=  1'b0    ;
    
+   // Reset advanced trigger states
    at_counts_a <= {64{1'b0}};
    at_reset_a <= 1'b1; 
    at_invert_a <= 1'b0;
@@ -269,10 +271,12 @@ if (dac_rstn_i == 1'b0) begin
    at_invert_b <= 1'b0;
    at_autorearm_b <= 1'b0;
 
+   // Disable random outputs
    rand_a_on <= 1'b0;
    rand_b_on <= 1'b0;
 
 end else begin
+   // Set trigger sources
    trig_a_sw  <= sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[0]  ;
    if (sys_wen && (sys_addr[19:0]==20'h0))
       trig_a_src <= sys_wdata[2:0] ;
@@ -281,9 +285,12 @@ end else begin
    if (sys_wen && (sys_addr[19:0]==20'h0))
       trig_b_src <= sys_wdata[19:16] ;
 
+   
    if (sys_wen) begin
+      // Update control signals based on system bus write data
       if (sys_addr[19:0]==20'h0)   {rand_a_on, at_autorearm_a, at_invert_a, at_reset_a, set_a_rgate, set_a_zero, set_a_rst, set_a_once, set_a_wrap} <= sys_wdata[12: 4] ;
       if (sys_addr[19:0]==20'h0)   {rand_b_on, at_autorearm_b, at_invert_b, at_reset_b, set_b_rgate, set_b_zero, set_b_rst, set_b_once, set_b_wrap} <= sys_wdata[28:20] ;
+
 
       if (sys_addr[19:0]==20'h4)   set_a_amp  <= sys_wdata[  0+13: 0] ;
       if (sys_addr[19:0]==20'h4)   set_a_dc   <= sys_wdata[ 16+13:16] ;
@@ -316,16 +323,20 @@ end else begin
    //   buf_b_rpnt_rd <= {{32-RSZ-2{1'b0}},buf_b_rpnt,2'h0};
    //end
 
-   ren_dly <= {ren_dly[3-2:0], sys_ren};
-   ack_dly <=  ren_dly[3-1] || sys_wen ;
+
+   ren_dly <= {ren_dly[3-2:0], sys_ren}; // Create a 3-cycle delayed version of sys_ren
+   ack_dly <=  ren_dly[3-1] || sys_wen ; // Assert sys_ack for delayed read or immediate write
 end
 
+// aggregate control signals into vector for readback on system bus
 wire [32-1: 0] r0_rd = {3'h0,rand_b_on,at_autorearm_b,at_invert_b,at_reset_b,set_b_rgate, set_b_zero,set_b_rst,set_b_once,set_b_wrap, 1'b0,trig_b_src,
                         3'h0,rand_a_on,at_autorearm_a,at_invert_a,at_reset_a,set_a_rgate, set_a_zero,set_a_rst,set_a_once,set_a_wrap, 1'b0,trig_a_src };
 
 wire sys_en;
 assign sys_en = sys_wen | sys_ren;
 
+
+// system bus read logic for the ASG module: Determines what data should be returned on read requests from the system bus based on provided sys_addr
 always @(posedge dac_clk_i)
 if (dac_rstn_i == 1'b0) begin
    sys_err <= 1'b0 ;
