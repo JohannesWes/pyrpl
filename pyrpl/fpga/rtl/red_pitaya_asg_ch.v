@@ -84,7 +84,7 @@ reg   [  14-1: 0] dac_buf [0:(1<<RSZ)-1] ;
 reg   [  14-1: 0] dac_rd    ;
 reg   [  14-1: 0] dac_rdat  ;
 reg   [ RSZ-1: 0] dac_rp    ;
-reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer
+reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer - fractional bits for sub-sample precision
 reg   [RSZ+16-1: 0] dac_pntp  ; // previous read pointer
 wire  [RSZ+17-1: 0] dac_npnt  ; // next read pointer
 wire  [RSZ+17-1: 0] dac_npnt_sub ;
@@ -93,7 +93,7 @@ wire              dac_npnt_sub_neg;
 reg   [  28-1: 0] dac_mult  ;
 reg   [  15-1: 0] dac_sum   ;
 
-// read
+// read from buffer
 always @(posedge dac_clk_i)
 begin
    buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
@@ -102,7 +102,7 @@ begin
    dac_rdat   <= dac_rd ;  // improve timing
 end
 
-// write
+// write to buffer
 always @(posedge dac_clk_i)
 if (buf_we_i)  dac_buf[buf_addr_i] <= buf_wdata_i[14-1:0] ;
 
@@ -134,10 +134,10 @@ reg  [  16-1: 0] rep_cnt      ;
 reg  [  32-1: 0] dly_cnt      ;
 reg  [   8-1: 0] dly_tick     ;
 
-reg              dac_do       ;
-reg              dac_rep      ;
-wire             dac_trig     ;
-reg              dac_trigr    ;
+reg              dac_do       ; // indicate if waveform generation currently active
+reg              dac_rep      ; // indicate if module is in waveform repetition mode
+wire             dac_trig     ; // trigger signal for starting or continuing waveform generation
+reg              dac_trigr    ; // holds previous value of dac_trig to detect transitions
 
 // state machine
 always @(posedge dac_clk_i) begin
@@ -153,13 +153,13 @@ always @(posedge dac_clk_i) begin
       dac_trigr <=  1'b0 ;
    end
    else begin
-      // make 1us tick
+      // make 1 us tick for timing desired delay between repetitions
       if (dac_do || (dly_tick == 8'd124))
          dly_tick <= 8'h0 ;
       else
          dly_tick <= dly_tick + 8'h1 ;
 
-      // delay between repetitions 
+      // delay between repetitions of the waveform
       if (set_rst_i || dac_do)
          dly_cnt <= set_rdly_i ;
       else if (|dly_cnt && (dly_tick == 8'd124))
@@ -167,7 +167,7 @@ always @(posedge dac_clk_i) begin
 
       // repetitions counter
       if (trig_in && !dac_do)
-         rep_cnt <= set_rnum_i ;
+         rep_cnt <= set_rnum_i ; // initial value - decremented each repitition
       else if (!set_rgate_i && (|rep_cnt && dac_rep && (dac_trig && !dac_do)))
          rep_cnt <= rep_cnt - 16'h1 ;
       else if (set_rgate_i && ((!trig_ext_i && trig_src_i==3'd2) || (trig_ext_i && trig_src_i==3'd3)))
@@ -207,7 +207,7 @@ always @(posedge dac_clk_i) begin
 end
 
 assign dac_trig = (!dac_rep && trig_in) || (dac_rep && |rep_cnt && (dly_cnt == 32'h0)) ;
-
+// check if we are at the end of the waveform buffer (computes difference between next pointer and size of the waveform buffer) & check if negative
 assign dac_npnt_sub = dac_npnt - {1'b0,set_size_i} - 1;
 assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 
