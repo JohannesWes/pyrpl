@@ -99,7 +99,7 @@ reg signed [GAINBITS-1:0] g4;
 reg [32-1:0] input_filter;
 reg [32-1:0] quadrature_filter;
 
-//  System bus connection
+//  System bus connection - register values can be set via the bus interface (via python)
 always @(posedge clk_i) begin
    if (rstn_i == 1'b0) begin
       //on <= 1'b1; //on by default
@@ -122,6 +122,8 @@ always @(posedge clk_i) begin
   	  output_select <= QUADRATURE;
    end
    else begin
+    
+    // Handles write operations to various configuration registers based on the address - allows to set the parameters via the bus interface (python)
       if (wen) begin
 		 // on was replaced by sync_i
 		 // if (addr==16'h100)   {cos_shifted_at_2f,sin_shifted_at_2f,cos_at_2f,sin_at_2f,pfd_on, on}   <= wdata[6-1:0];
@@ -140,6 +142,7 @@ always @(posedge clk_i) begin
          if (addr==16'h134)   na_sleepcycles <= wdata;
       end
 
+    // When there is a read request, the corresponding register value is sent back via rdata
 	  casez (addr)
 	     16'h100 : begin ack <= wen|ren; rdata <= {{32-6{1'b0}},cos_shifted_at_2f,sin_shifted_at_2f,cos_at_2f,sin_at_2f,pfd_on,on}; end
 	     16'h104 : begin ack <= wen|ren; rdata <= {{32-PHASEBITS{1'b0}},start_phase}; end
@@ -227,7 +230,7 @@ iq_fgen
   );
 
 
-//demodulation
+//demodulation - just a product with sin/cos, not filtered yet
 wire signed [LPFBITS-1:0] quadrature1_hf;
 wire signed [LPFBITS-1:0] quadrature2_hf;
 red_pitaya_iq_demodulator_block #(
