@@ -67,7 +67,9 @@
  * 
  */
 
-module red_pitaya_asg (
+module red_pitaya_asg #(
+   parameter PHASEBITS = 32
+)(
   // DAC
   output     [ 14-1: 0] dac_a_o   ,  // DAC data CHA
   output     [ 14-1: 0] dac_b_o   ,  // DAC data CHB
@@ -79,7 +81,10 @@ module red_pitaya_asg (
  
   input                 trig_scope_i    ,  // trigger from the scope
 
-  output     [ 14-1: 0] asg1phase_o,
+  input     [PHASEBITS-1: 0] asg_a_phase_ext,  // external phase CHA
+  input     [PHASEBITS-1: 0] asg_b_phase_ext,  // external phase CHB
+
+  output     [ 14-1: 0] asg1phase_o,  // phase for specific triggering funcitonalities - not used here
 
   // System bus
   input      [ 32-1: 0] sys_addr  ,  // bus address
@@ -166,6 +171,8 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [1:0] (
   .trig_ext_i      ({at_trig_a        , at_trig_b        }),  // advanced trigger as ext trigger - backwards-compatible with original version
   .trig_src_i      ({trig_b_src       , trig_a_src       }),  // trigger source selector
   .trig_done_o     ({trig_b_done      , trig_a_done      }),  // trigger event
+  // external phase
+  .asg_phase_ext   ({asg_b_phase_ext  , asg_a_phase_ext  }),  // external phase
   // buffer ctrl
   .buf_we_i        ({buf_b_we         , buf_a_we         }),  // buffer buffer write
   .buf_addr_i      ({buf_b_addr       , buf_a_addr       }),  // buffer address

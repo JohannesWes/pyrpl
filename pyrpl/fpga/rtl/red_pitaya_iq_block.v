@@ -62,6 +62,8 @@ module red_pitaya_iq_block #(
    output     [ 14-1: 0] signal_o        ,  // output data
    output     [ 14-1: 0] signal2_o       ,  // output data 2 (orthogonal quadrature)
 
+   output     [PHASEBITS-1: 0] iq_phase_o      ,  // phase output
+
    // communication with PS
    input      [ 16-1: 0] addr,
    input                 wen,
@@ -226,7 +228,8 @@ iq_fgen
   .sin_o               (  sin            ),
   .cos_o               (  cos            ),
   .sin_shifted_o       (  sin_shifted    ),
-  .cos_shifted_o       (  cos_shifted    )
+  .cos_shifted_o       (  cos_shifted    ),
+  .phase_o             (  iq_phase_o     )
   );
 
 
@@ -246,7 +249,7 @@ red_pitaya_iq_demodulator_block #(
         .sin   (sin_shifted),
         .cos   (cos_shifted),
         .signal_i (dat_i_filtered),
-        .signal1_o (quadrature1_hf),
+        .signal1_o (quadrature1_hf), // hf means that this still contains the high frequency part - not low-passed yet
         .signal2_o (quadrature2_hf)
     );
 

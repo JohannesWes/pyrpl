@@ -61,13 +61,15 @@ module red_pitaya_iq_fgen_block #(
     output [LUTBITS-1:0] sin_o      ,
     output [LUTBITS-1:0] cos_o      ,
     output [LUTBITS-1:0] sin_shifted_o      ,
-    output [LUTBITS-1:0] cos_shifted_o
+    output [LUTBITS-1:0] cos_shifted_o      ,
+    output [PHASEBITS-1:0] phase_o // Output current phase - either of sin or sin_shifted
 );
 
 reg [LUTBITS-1:0] sin;
 reg [LUTBITS-1:0] cos;
 reg [LUTBITS-1:0] sin_shifted;
 reg [LUTBITS-1:0] cos_shifted;
+reg [PHASEBITS-1:0] phase_o_reg;
 
 assign sin_o = sin;
 assign sin_shifted_o = sin_shifted;
@@ -138,6 +140,8 @@ assign invertsignal2 = wwphase2[PHASEBITS-1];
 assign invertsignal3 = wwphase3[PHASEBITS-1];
 assign invertsignal4 = wwphase4[PHASEBITS-1];
 
+assign phase_o = phase_o_reg;
+
 //main loop
 always @(posedge clk_i) begin
     // 1) Next-phase computations:
@@ -164,7 +168,8 @@ always @(posedge clk_i) begin
 
     // 4) Reset vs. Running State
     if (on==1'b0) begin // TODO: additional reset condition for syncing with ASG period possibly
-        phase <= {PHASEBITS{1'b0}}; 
+        phase <= {PHASEBITS{1'b0}};
+        phase_o_reg <= {PHASEBITS{1'b0}};
         sin <= {LUTBITS{1'b0}};
         cos <= {LUTBITS{1'b0}};
         sin_shifted <= {LUTBITS{1'b0}};
@@ -179,7 +184,7 @@ always @(posedge clk_i) begin
         cos <= invertsignal2_reg_reg ? ((~cos_reg)+'b1) : cos_reg; 
         sin_shifted <= invertsignal3_reg_reg ? ((~sin_shifted_reg)+'b1) : sin_shifted_reg;  
         cos_shifted <= invertsignal4_reg_reg ? ((~cos_shifted_reg)+'b1) : cos_shifted_reg;
-        phase_o <= phase + shift_phase;  // TODO: maybe instead phase_o <= phase, schauen, wann welcher Wert ausgegeben sollte
+        phase_o_reg <= phase + shift_phase;  // TODO: maybe instead phase_o <= phase, schauen, wann welcher Wert ausgegeben sollte
     end
 end
 

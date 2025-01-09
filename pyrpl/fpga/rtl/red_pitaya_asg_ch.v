@@ -36,7 +36,9 @@
 
 module red_pitaya_asg_ch #(
    parameter RSZ = 14,
-   parameter CYCLE_BITS = 32
+   parameter CYCLE_BITS = 32,
+   parameter PHASEBITS = 32,
+   parameter USE_EXT_PHASE = 1 // TODO: Implement control for this
 )(
    // DAC
    output reg [ 14-1: 0] dac_o           ,  //!< dac data output
@@ -47,6 +49,9 @@ module red_pitaya_asg_ch #(
    input                 trig_ext_i      ,  //!< external trigger
    input      [  3-1: 0] trig_src_i      ,  //!< trigger source selector
    output                trig_done_o     ,  //!< trigger event
+
+   // external phase
+   input      [PHASEBITS-1:0] asg_phase_ext     ,  // phase input - allow for directly controlling the current phase
    
    // buffer ctrl
    input                 buf_we_i        ,  //!< buffer write enable
@@ -84,6 +89,8 @@ reg   [  14-1: 0] dac_buf [0:(1<<RSZ)-1] ;
 reg   [  14-1: 0] dac_rd    ;
 reg   [  14-1: 0] dac_rdat  ;
 reg   [ RSZ-1: 0] dac_rp    ;
+reg   [ RSZ-1: 0] dac_rp_reg; // Registered version of dac_rp for stable indexing
+reg   [RSZ+16-1: 0] phase_sum ;
 reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer - fractional bits for sub-sample precision
 reg   [RSZ+16-1: 0] dac_pntp  ; // previous read pointer
 wire  [RSZ+17-1: 0] dac_npnt  ; // next read pointer
@@ -96,10 +103,20 @@ reg   [  15-1: 0] dac_sum   ;
 // read from buffer
 always @(posedge dac_clk_i)
 begin
-   buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
-   dac_rp     <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[RSZ+15:16];
-   dac_rd     <= dac_buf[dac_rp] ;
-   dac_rdat   <= dac_rd ;  // improve timing
+   if (USE_EXT_PHASE) begin // use externally supplied phase as read pointer
+       phase_sum <= asg_phase_ext[PHASEBITS-1:PHASEBITS-RSZ-16] + set_ofs_i[RSZ+16-1:0];
+       dac_rp <= phase_sum[RSZ+16-1:16]; 
+       buf_rpnt_o <= phase_sum[RSZ+16-1:16];
+   end else begin
+       dac_rp <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[16+RSZ-1:16];
+       buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
+   end
+
+   // pipeline the read pointer TODO: might be unnecessary
+   dac_rp_reg <= dac_rp;
+
+   dac_rd   <= dac_buf[dac_rp_reg];
+   dac_rdat <= dac_rd;  // improve timing
 end
 
 // write to buffer

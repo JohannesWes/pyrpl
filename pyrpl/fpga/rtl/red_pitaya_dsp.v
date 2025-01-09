@@ -52,7 +52,8 @@ should not be used.
 
 
 module red_pitaya_dsp #(
-	parameter MODULES = 8
+	parameter MODULES = 8,
+   parameter PHASEBITS = 32
 )
 (
    // signals
@@ -62,6 +63,10 @@ module red_pitaya_dsp #(
    input      [ 14-1: 0] dat_b_i         ,  //!< input data CHB
    output     [ 14-1: 0] dat_a_o         ,  //!< output data CHA
    output     [ 14-1: 0] dat_b_o         ,  //!< output data CHB
+
+   output     [PHASEBITS-1:0] iq_phase_5_o,
+   output     [PHASEBITS-1:0] iq_phase_6_o,
+   output     [PHASEBITS-1:0] iq_phase_7_o,
 
    output     [ 14-1: 0] scope1_o,
    output     [ 14-1: 0] scope2_o,
@@ -386,55 +391,64 @@ generate for (j = 4; j < 5; j = j+1) begin
 end endgenerate
 
 
+//IQ phase wires
+wire [PHASEBITS-1:0] iq_phase [7:0];
+
 //IQ modules
 generate for (j = 5; j < 7; j = j+1) begin
-    red_pitaya_iq_block 
-      iq
-      (
-	     // data
-	     .clk_i        (  clk_i          ),  // clock
-	     .rstn_i       (  rstn_i         ),  // reset - active low
-         .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
-	     .dat_i        (  input_signal [j] ),  // input data
-	     .dat_o        (  output_direct[j]),  // output data
-		 .signal_o     (  output_signal[j]),  // output signal
+   red_pitaya_iq_block 
+     iq
+     (
+       // data
+       .clk_i        (  clk_i            ),  // clock
+       .rstn_i       (  rstn_i           ),  // reset - active low
+       .sync_i       (  sync[j]          ),  // sync
+       .dat_i        (  input_signal [j] ),  // input data
+       .dat_o        (  output_direct[j] ),  // output data
+       .signal_o     (  output_signal[j] ),  // output signal
+       .iq_phase_o   (  iq_phase[j]      ),  // new phase output
 
-         // not using 2nd quadrature for most iq's: multipliers will be
-         // synthesized away by Vivado
-         //.signal2_o  (  output_signal[j*2]),  // output signal
+       // not using 2nd quadrature for most iq's: multipliers will be
+       // synthesized away by Vivado
+       //.signal2_o  (  output_signal[j*2]),  // output signal
 
-		 //communincation with PS
-		 .addr ( sys_addr[16-1:0] ),
-		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-		 .ack  ( module_ack[j] ),
-		 .rdata (module_rdata[j]),
-	     .wdata (sys_wdata)
-      );
+       // communication with PS
+       .addr ( sys_addr[16-1:0] ),
+       .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+       .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+       .ack  ( module_ack[j] ),
+       .rdata (module_rdata[j]),
+       .wdata (sys_wdata)
+     );
 end endgenerate
 
 // IQ with two outputs
 generate for (j = 7; j < 8; j = j+1) begin
-    red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
-      iq_2_outputs
-      (
-         // data
-         .clk_i        (  clk_i          ),  // clock
-         .rstn_i       (  rstn_i         ),  // reset - active low
-         .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
-         .dat_i        (  input_signal [j] ),  // input data
-         .dat_o        (  output_direct[j]),  // output data
-         .signal_o     (  output_signal[j]),  // output signal
-         .signal2_o    (  output_signal[j*2]),  // output signal 2
+   red_pitaya_iq_block #( .QUADRATUREFILTERSTAGES(4) )
+     iq_2_outputs
+     (
+       // data
+       .clk_i        (  clk_i            ),  // clock
+       .rstn_i       (  rstn_i           ),  // reset - active low
+       .sync_i       (  sync[j]          ),  // sync
+       .dat_i        (  input_signal [j] ),  // input data
+       .dat_o        (  output_direct[j] ),  // output data
+       .signal_o     (  output_signal[j] ),  // output signal
+       .signal2_o    (  output_signal[j*2]), // output signal 2
+       .iq_phase_o   (  iq_phase[j]    ),   // new phase output
 
-         //communincation with PS
-         .addr ( sys_addr[16-1:0] ),
-         .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-         .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-         .ack  ( module_ack[j] ),
-         .rdata (module_rdata[j]),
-         .wdata (sys_wdata)
-      );
+       // communication with PS
+       .addr  ( sys_addr[16-1:0] ),
+       .wen   ( sys_wen & (sys_addr[20-1:16]==j) ),
+       .ren   ( sys_ren & (sys_addr[20-1:16]==j) ),
+       .ack   ( module_ack[j] ),
+       .rdata (module_rdata[j]),
+       .wdata (sys_wdata)
+     );
 end endgenerate
+
+assign iq_phase_5_o = iq_phase[5];
+assign iq_phase_6_o = iq_phase[6];
+assign iq_phase_7_o = iq_phase[7];
 
 endmodule

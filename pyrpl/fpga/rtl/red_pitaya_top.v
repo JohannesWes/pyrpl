@@ -80,7 +80,9 @@
  * 
  */
 
-module red_pitaya_top (
+module red_pitaya_top #(
+  parameter PHASEBITS = 32
+)(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
    inout            FIXED_IO_ps_clk    ,
@@ -471,6 +473,10 @@ red_pitaya_scope i_scope (
 //  DAC arbitrary signal generator
 wire    [14-1: 0] asg1phase_o;
 
+wire [PHASEBITS-1:0] iq_phase_5_o;
+wire [PHASEBITS-1:0] iq_phase_6_o;
+wire [PHASEBITS-1:0] iq_phase_7_o;
+
 red_pitaya_asg i_asg (
    // DAC
   .dac_a_o         (  asg_a                      ),  // CH 1
@@ -482,6 +488,9 @@ red_pitaya_asg i_asg (
   .trig_out_o      (  trig_asg_out               ),
   .trig_scope_i    (  trig_scope_out             ),
   .asg1phase_o     (  asg1phase_o                ),
+
+  .asg_a_phase_ext (  iq_phase_7_o               ),  // external phase CHA TODO: maybe implement control for which IQ phase is used
+  .asg_b_phase_ext (  iq_phase_7_o               ),  // external phase CHB
   
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -498,7 +507,7 @@ red_pitaya_asg i_asg (
 //  DSP module
 
 red_pitaya_dsp i_dsp (
-   // signals
+  // signals
   .clk_i           (  adc_clk                    ),  // clock
   .rstn_i          (  adc_rstn                   ),  // reset - active low
   .dat_a_i         (  adc_a                      ),  // in 1
@@ -506,18 +515,22 @@ red_pitaya_dsp i_dsp (
   .dat_a_o         (  dac_a                      ),  // out 1
   .dat_b_o         (  dac_b                      ),  // out 2
   
-  .asg1_i          (  asg_a                  ),
-  .asg2_i          (  asg_b                  ),
-  .scope1_o        (  to_scope_a             ),
-  .scope2_o        (  to_scope_b             ),
-  .asg1phase_i     (  asg1phase_o            ),
+  .asg1_i          (  asg_a                      ),
+  .asg2_i          (  asg_b                      ),
+  .scope1_o        (  to_scope_a                 ),
+  .scope2_o        (  to_scope_b                 ),
+  .asg1phase_i     (  asg1phase_o                ),
 
-  .pwm0            (  pwm_signals[0]         ),
-  .pwm1            (  pwm_signals[1]         ),
-  .pwm2            (  pwm_signals[2]         ),
-  .pwm3            (  pwm_signals[3]         ),
+  .pwm0            (  pwm_signals[0]             ),
+  .pwm1            (  pwm_signals[1]             ),
+  .pwm2            (  pwm_signals[2]             ),
+  .pwm3            (  pwm_signals[3]             ),
 
-  .trig_o          (  dsp_trigger            ),
+  .trig_o          (  dsp_trigger                ),
+
+  .iq_phase_5_o    (  iq_phase_5_o               ),
+  .iq_phase_6_o    (  iq_phase_6_o               ),
+  .iq_phase_7_o    (  iq_phase_7_o               ),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
