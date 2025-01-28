@@ -329,7 +329,7 @@ class Pyrpl(object):
                 #     module._load_setup_attributes()
                 # except BaseException as e:
                 #     self.logger.error('Something went wrong when loading the '
-                #                       'stored setup_attributes of module "%s". '
+                #                       'stored set<up_attributes of module "%s". '
                 #                       'If you do not know what this means, you should '
                 #                       'be able to fix this error by deleting the '
                 #                       'corresponding section "%s" in your config file %s. '
@@ -339,6 +339,10 @@ class Pyrpl(object):
         # make the gui if applicable
         if self.c.redpitaya.gui:
             self.show_gui()
+
+        # workaround, such that the asgs don't blast 1 V out on startup
+        self.rp.asg1.amplitude = 0.0
+        self.rp.asg0.amplitude = 0.0
 
     def show_gui(self):
         if len(self.widgets) == 0:
