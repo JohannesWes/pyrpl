@@ -424,7 +424,7 @@ IOBUF i_iobufp [8-1:0] (.O(exp_p_in), .IO(exp_p_io), .I(exp_p_out), .T(~exp_p_di
 IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_dir) );
 
 //---------------------------------------------------------------------------------
-//  Oscilloscope application
+//  This will become the scan ODMR lines application
 
 wire    [  2-1:0] trig_asg_out;
 wire              trig_scope_out;
@@ -432,6 +432,54 @@ wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
 wire              dsp_trigger;
 
+
+// red_pitaya_scope i_scope (
+//   // ADC
+//   .adc_a_i         (  to_scope_a /*adc_a*/       ),  // CH 1
+//   .adc_b_i         (  to_scope_b /*adc_a*/       ),  // CH 2
+//   .adc_clk_i       (  adc_clk                    ),  // clock
+//   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
+//   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger
+//   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
+//   .trig_dsp_i      (  dsp_trigger                ),
+//   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
+
+
+//   // AXI0 master                 // AXI1 master
+//   .axi0_clk_o    (axi0_clk   ),  .axi1_clk_o    (axi1_clk   ),
+//   .axi0_rstn_o   (axi0_rstn  ),  .axi1_rstn_o   (axi1_rstn  ),
+//   .axi0_waddr_o  (axi0_waddr ),  .axi1_waddr_o  (axi1_waddr ),
+//   .axi0_wdata_o  (axi0_wdata ),  .axi1_wdata_o  (axi1_wdata ),
+//   .axi0_wsel_o   (axi0_wsel  ),  .axi1_wsel_o   (axi1_wsel  ),
+//   .axi0_wvalid_o (axi0_wvalid),  .axi1_wvalid_o (axi1_wvalid),
+//   .axi0_wlen_o   (axi0_wlen  ),  .axi1_wlen_o   (axi1_wlen  ),
+//   .axi0_wfixed_o (axi0_wfixed),  .axi1_wfixed_o (axi1_wfixed),
+//   .axi0_werr_i   (axi0_werr  ),  .axi1_werr_i   (axi1_werr  ),
+//   .axi0_wrdy_i   (axi0_wrdy  ),  .axi1_wrdy_i   (axi1_wrdy  ),
+
+
+//   // System bus
+//   .sys_addr        (  sys_addr                   ),  // address
+//   .sys_wdata       (  sys_wdata                  ),  // write data
+//   .sys_sel         (  sys_sel                    ),  // write byte select
+//   .sys_wen         (  sys_wen[1]                 ),  // write enable
+//   .sys_ren         (  sys_ren[1]                 ),  // read enable
+//   .sys_rdata       (  sys_rdata[ 1*32+31: 1*32]  ),  // read data
+//   .sys_err         (  sys_err[1]                 ),  // error indicator
+//   .sys_ack         (  sys_ack[1]                 )   // acknowledge signal
+// );
+
+// //---------------------------------------------------------------------------------
+// //  Scan Module TODO: Make correct connections for scan module, possibly using sys_rdata[6*32:...] (adresses seem unused atm)
+
+// wire    [  2-1:0] trig_asg_out;
+// wire              trig_scope_out;
+// wire    [14-1: 0] to_scope_a;
+// wire    [14-1: 0] to_scope_b;
+// wire              dsp_trigger;
+
+//---------------------------------------------------------------------------------
+//  Oscilloscope application
 
 red_pitaya_scope i_scope (
   // ADC
