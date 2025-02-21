@@ -237,9 +237,9 @@ wire  [8   -1: 0] sys_ren   ;
 wire  [8*32-1: 0] sys_rdata ;
 wire  [8* 1-1: 0] sys_err   ;
 wire  [8* 1-1: 0] sys_ack   ;
-wire  [8   -1: 0] sys_cs    ;
+wire  [8   -1: 0] sys_cs    ; // system chip select --> Chooses which module responds to the memory access on the system bus at a each time
 
-assign sys_cs = 8'h01 << sys_addr[22:20];
+assign sys_cs = 8'h01 << sys_addr[22:20]; // select one of 8 modules
 
 assign sys_wen = sys_cs & {8{ps_sys_wen}};
 assign sys_ren = sys_cs & {8{ps_sys_ren}};
@@ -427,10 +427,10 @@ IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_di
 //  Oscilloscope application
 
 wire    [  2-1:0] trig_asg_out;
-wire trig_scope_out;
+wire              trig_scope_out;
 wire    [14-1: 0] to_scope_a;
 wire    [14-1: 0] to_scope_b;
-wire dsp_trigger;
+wire              dsp_trigger;
 
 
 red_pitaya_scope i_scope (

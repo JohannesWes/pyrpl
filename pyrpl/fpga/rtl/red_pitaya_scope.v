@@ -205,6 +205,7 @@ end else begin
 
    adc_dv <= (adc_dec_cnt >= set_dec) ;
 
+   // dividing/averaging by bit shifting would be better than via this selection approach
    case (set_dec & {17{set_avg_en}})
       17'h0     : begin adc_a_dat <= adc_a_filt_out;            adc_b_dat <= adc_b_filt_out;        end
       17'h1     : begin adc_a_dat <= adc_a_sum[15+0 :  0];      adc_b_dat <= adc_b_sum[15+0 :  0];  end
@@ -245,22 +246,22 @@ reg   [  14-1: 0] adc_a_buf [0:(1<<RSZ)-1] ;
 reg   [  14-1: 0] adc_b_buf [0:(1<<RSZ)-1] ;
 reg   [  14-1: 0] adc_a_rd      ;
 reg   [  14-1: 0] adc_b_rd      ;
-reg   [ RSZ-1: 0] adc_wp        ;
-reg   [ RSZ-1: 0] adc_raddr     ;
+reg   [ RSZ-1: 0] adc_wp        ; // Write pointer
+reg   [ RSZ-1: 0] adc_raddr     ; 
 reg   [ RSZ-1: 0] adc_a_raddr   ;
 reg   [ RSZ-1: 0] adc_b_raddr   ;
 reg   [   4-1: 0] adc_rval      ;
 wire              adc_rd_dv     ;
-reg               adc_we        ;
-reg               adc_we_keep   ;
+reg               adc_we        ; // Write enable
+reg               adc_we_keep   ; // Keep writing after trigger (controlled by SW)
 reg               adc_trig      ;
 
-reg   [ RSZ-1: 0] adc_wp_trig   ;
-reg   [ RSZ-1: 0] adc_wp_cur    ;
-reg   [  32-1: 0] set_dly       ;
-reg   [  32-1: 0] adc_we_cnt    ;
-reg   [  32-1: 0] adc_dly_cnt   ;
-reg               adc_dly_do    ;
+reg   [ RSZ-1: 0] adc_wp_trig   ; // Write pointer at the moment of trigger
+reg   [ RSZ-1: 0] adc_wp_cur    ; // Current write pointer (used for pre-trigger)
+reg   [  32-1: 0] set_dly       ; // Trigger delay (number of samples after trigger)
+reg   [  32-1: 0] adc_we_cnt    ; // Counts samples written before trigger
+reg   [  32-1: 0] adc_dly_cnt   ; // Counts down the trigger delay
+reg               adc_dly_do    ; // Indicates if trigger delay is active
 reg    [ 20-1: 0] set_deb_len   ; // debouncing length (glitch free time after a posedge)
 
 reg               triggered    ;
@@ -268,7 +269,7 @@ reg               triggered    ;
 reg   [ 64 - 1:0] timestamp_trigger;
 reg   [ 64 - 1:0] ctr_value        ;
 reg   [ 14 - 1:0] pretrig_data_min; // make sure this amount of data has been acquired before trig
-reg 			  pretrig_ok;
+reg 			  pretrig_ok;         // Indicates if enough pre-trigger data is acquired
 
 // Write
 always @(posedge adc_clk_i) begin

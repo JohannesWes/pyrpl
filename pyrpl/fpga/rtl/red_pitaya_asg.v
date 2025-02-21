@@ -103,7 +103,7 @@ module red_pitaya_asg #(
 
 localparam RSZ = 14 ;  // RAM size 2^RSZ
 
-reg   [RSZ+15: 0] set_a_size   , set_b_size   ;
+reg   [RSZ+15: 0] set_a_size   , set_b_size   ; // RSZ+15 = 19 to use full 19 bits of sys_addr[19:0]
 reg   [RSZ+15: 0] set_a_step   , set_b_step   ;
 reg   [RSZ+15: 0] set_a_ofs    , set_b_ofs    ;
 reg               set_a_rst    , set_b_rst    ;
@@ -219,8 +219,8 @@ always @(posedge dac_clk_i)
 begin
    buf_a_we   <= sys_wen && (sys_addr[19:RSZ+2] == 'h1);
    buf_b_we   <= sys_wen && (sys_addr[19:RSZ+2] == 'h2);
-   buf_a_addr <= sys_addr[RSZ+1:2] ;  // address timing violation
-   buf_b_addr <= sys_addr[RSZ+1:2] ;  // can change only synchronous to write clock
+   buf_a_addr <= sys_addr[RSZ-1+2:2] ;  // address timing violation
+   buf_b_addr <= sys_addr[RSZ-1+2:2] ;  // can change only synchronous to write clock
 end
 
 assign trig_out_o = {trig_b_done,trig_a_done};
