@@ -162,6 +162,7 @@ def make_asg(channel=0):
                            "amplitude",
                            "offset",
                            "frequency",
+                           "fm_frequency_deviation_khz",
                            "trigger_source",
                            "output_direct",
                            "start_phase"]
@@ -210,7 +211,7 @@ def make_asg(channel=0):
         _sm_wrappointer = BoolRegister(0x0, 4 + _BIT_OFFSET,
                                        doc='If False, fgen starts from data[0] value after each cycle. If True, assumes that data is periodic and jumps to the naturally next index after full cycle.')
 
-        # register set_a_rgate
+        # register set_a_size/set_b_size
         _counter_wrap = IntRegister(0x8 + _VALUE_OFFSET,
                                     bits=32,
                                     doc="Raw phase value where counter wraps around. To be set to 2**16*(2**14-1) = 0x3FFFFFFF in virtually all cases. ")
@@ -262,6 +263,12 @@ def make_asg(channel=0):
                                       log_increment=True,
                                       doc="Frequency of the output waveform [Hz]")
 
+        fm_frequency_deviation_khz = IntRegister(0x44 + _VALUE_OFFSET, bits=32,
+                                            min=0,  # Minimum 0 kHz
+                                            max=1000,  # Maximum 1000 kHz (1 MHz),
+                                            doc="Maximum frequency deviation for FM [kHz].")
+
+        #
         _counter_step = IntRegister(0x10 + _VALUE_OFFSET, doc="""Each clock cycle the counter_step is increases the internal counter modulo counter_wrap.
             The current counter step rightshifted by 16 bits is the index of the value that is chosen from the data table.
             """)

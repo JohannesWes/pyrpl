@@ -38,7 +38,7 @@ module red_pitaya_asg_ch #(
    parameter RSZ = 14,
    parameter CYCLE_BITS = 32,
    parameter PHASEBITS = 32,
-   parameter USE_EXT_PHASE = 1 // TODO: Implement control for this
+   parameter USE_EXT_PHASE = 0
 )(
    // DAC
    output reg [ 14-1: 0] dac_o           ,  //!< dac data output
@@ -51,7 +51,7 @@ module red_pitaya_asg_ch #(
    output                trig_done_o     ,  //!< trigger event
 
    // external phase
-   input      [PHASEBITS-1:0] asg_phase_ext     ,  // phase input - allow for directly controlling the current phase
+   input      [PHASEBITS-1:0] asg_phase_ext     ,  // phase input - allow for directly controlling the current phase - not the step size
    
    // buffer ctrl
    input                 buf_we_i        ,  //!< buffer write enable
@@ -95,7 +95,7 @@ reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer - fractional bits for sub-sample
 reg   [RSZ+16-1: 0] dac_pntp  ; // previous read pointer
 wire  [RSZ+17-1: 0] dac_npnt  ; // next read pointer
 wire  [RSZ+17-1: 0] dac_npnt_sub ;
-wire              dac_npnt_sub_neg;
+wire                dac_npnt_sub_neg;
 
 reg   [  28-1: 0] dac_mult  ;
 reg   [  15-1: 0] dac_sum   ;
@@ -104,15 +104,15 @@ reg   [  15-1: 0] dac_sum   ;
 always @(posedge dac_clk_i)
 begin
    if (USE_EXT_PHASE) begin // use externally supplied phase as read pointer
-       phase_sum <= asg_phase_ext[PHASEBITS-1:PHASEBITS-RSZ-16] + set_ofs_i[RSZ+16-1:0];
+       phase_sum <= asg_phase_ext[PHASEBITS-1:PHASEBITS-RSZ-16] + set_ofs_i[RSZ+16-1:0]; // use only the 30 MSBs from asg_phase_ext
        dac_rp <= phase_sum[RSZ+16-1:16]; 
        buf_rpnt_o <= phase_sum[RSZ+16-1:16];
    end else begin
-       dac_rp <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[16+RSZ-1:16];
+       dac_rp <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[RSZ+16-1:16];
        buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
    end
 
-   // pipeline the read pointer TODO: might be unnecessary
+   // pipeline the read pointer
    dac_rp_reg <= dac_rp;
 
    dac_rd   <= dac_buf[dac_rp_reg];
