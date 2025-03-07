@@ -81,7 +81,8 @@
  */
 
 module red_pitaya_top #(
-  parameter PHASEBITS = 32
+  parameter PHASEBITS = 32,
+  parameter LUTBITS   = 17
 )(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
@@ -521,9 +522,14 @@ red_pitaya_scope i_scope (
 //  DAC arbitrary signal generator
 wire    [14-1: 0] asg1phase_o;
 
-wire [PHASEBITS-1:0] iq_phase_5_o;
-wire [PHASEBITS-1:0] iq_phase_6_o;
-wire [PHASEBITS-1:0] iq_phase_7_o;
+wire [PHASEBITS-1:0] iq0_phase;
+wire [PHASEBITS-1:0] iq1_phase;
+wire [PHASEBITS-1:0] iq2_phase;
+
+wire signed [LUTBITS-1:0] iq0_sin;
+wire signed [LUTBITS-1:0] iq1_sin;
+wire signed [LUTBITS-1:0] iq2_sin;
+
 
 red_pitaya_asg i_asg (
    // DAC
@@ -537,8 +543,14 @@ red_pitaya_asg i_asg (
   .trig_scope_i    (  trig_scope_out             ),
   .asg1phase_o     (  asg1phase_o                ),
 
-  .asg_a_phase_ext (  iq_phase_7_o               ),  // external phase CHA TODO: maybe implement control for which IQ phase is used
-  .asg_b_phase_ext (  iq_phase_7_o               ),  // external phase CHB
+  .iq0_phase       (  iq0_phase                  ),
+  .iq1_phase       (  iq1_phase                  ),
+  .iq2_phase       (  iq2_phase                  ),
+
+  .iq0_sin         (  iq0_sin                    ),
+  .iq1_sin         (  iq1_sin                    ),
+  .iq2_sin         (  iq2_sin                    ),
+
   
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -576,9 +588,13 @@ red_pitaya_dsp i_dsp (
 
   .trig_o          (  dsp_trigger                ),
 
-  .iq_phase_5_o    (  iq_phase_5_o               ),
-  .iq_phase_6_o    (  iq_phase_6_o               ),
-  .iq_phase_7_o    (  iq_phase_7_o               ),
+  .iq0_phase_o     (  iq0_phase                  ),
+  .iq1_phase_o     (  iq1_phase                  ),
+  .iq2_phase_o     (  iq2_phase                  ),
+
+  .iq0_sin_o       (  iq0_sin                    ),
+  .iq1_sin_o       (  iq1_sin                    ),
+  .iq2_sin_o       (  iq2_sin                    ),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address

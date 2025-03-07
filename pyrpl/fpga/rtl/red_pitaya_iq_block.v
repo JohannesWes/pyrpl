@@ -63,6 +63,10 @@ module red_pitaya_iq_block #(
    output     [ 14-1: 0] signal2_o       ,  // output data 2 (orthogonal quadrature)
 
    output     [PHASEBITS-1: 0] iq_phase_o      ,  // phase output
+   output signed [LUTBITS-1:0] sin_out,
+   output signed [LUTBITS-1:0] cos_out,
+   output signed [LUTBITS-1:0] sin_shifted_out,
+   output signed [LUTBITS-1:0] cos_shifted_out,
 
    // communication with PS
    input      [ 16-1: 0] addr,
@@ -232,6 +236,11 @@ iq_fgen
   .phase_o             (  iq_phase_o     )
   );
 
+// Connect the fgen outputs to the new module outputs
+assign sin_out         = sin;
+assign cos_out         = cos;
+assign sin_shifted_out = sin_shifted;
+assign cos_shifted_out = cos_shifted;
 
 //demodulation - just a product with sin/cos, not filtered yet
 wire signed [LPFBITS-1:0] quadrature1_hf;

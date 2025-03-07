@@ -53,7 +53,8 @@ should not be used.
 
 module red_pitaya_dsp #(
 	parameter MODULES = 8, // TODO: Modify
-   parameter PHASEBITS = 32
+   parameter PHASEBITS = 32,
+   parameter LUTBITS = 17
 )
 (
    // signals
@@ -63,10 +64,6 @@ module red_pitaya_dsp #(
    input      [ 14-1: 0] dat_b_i         ,  //!< input data CHB
    output     [ 14-1: 0] dat_a_o         ,  //!< output data CHA
    output     [ 14-1: 0] dat_b_o         ,  //!< output data CHB
-
-   output     [PHASEBITS-1:0] iq_phase_5_o,
-   output     [PHASEBITS-1:0] iq_phase_6_o,
-   output     [PHASEBITS-1:0] iq_phase_7_o,
 
    output     [ 14-1: 0] scope1_o,
    output     [ 14-1: 0] scope2_o,
@@ -82,6 +79,14 @@ module red_pitaya_dsp #(
 
    // trigger outputs for the scope
    output                trig_o,   // output from trigger dsp module
+
+   output signed [LUTBITS-1:0] iq0_sin_o,
+   output signed [LUTBITS-1:0] iq1_sin_o,
+   output signed [LUTBITS-1:0] iq2_sin_o,
+
+   output     [PHASEBITS-1:0] iq0_phase_o,
+   output     [PHASEBITS-1:0] iq1_phase_o,
+   output     [PHASEBITS-1:0] iq2_phase_o,
 
    // system bus
    input      [ 32-1: 0] sys_addr        ,  //!< bus address
@@ -142,7 +147,7 @@ wire [14-1:0] input_signal [MODULES+EXTRAMODULES+EXTRAOUTPUTS-1:0];
 reg [LOG_MODULES-1:0] input_select [MODULES+EXTRAMODULES+EXTRAOUTPUTS-1:0];
 
 // the output of each module for internal routing, including 'virtual outputs' for the EXTRAINPUTS
-wire [14-1:0] output_signal [MODULES+EXTRAMODULES+EXTRAINPUTS-1+1:0];
+wire [14-1:0] output_signal [MODULES+EXTRAMODULES+EXTRAINPUTS+1-1:0];
 
 // the output of each module that is added to the chosen DAC
 wire [14-1:0] output_direct [MODULES+EXTRAMODULES-1:0];
@@ -392,8 +397,9 @@ generate for (j = 4; j < 5; j = j+1) begin
 end endgenerate
 
 
-//IQ phase wires
+// additional IQ wires
 wire [PHASEBITS-1:0] iq_phase [7:0];
+wire signed [LUTBITS-1:0]   iq_sin [7:0];
 
 //IQ modules
 generate for (j = 5; j < 7; j = j+1) begin
@@ -407,7 +413,8 @@ generate for (j = 5; j < 7; j = j+1) begin
        .dat_i        (  input_signal [j] ),  // input data
        .dat_o        (  output_direct[j] ),  // output data
        .signal_o     (  output_signal[j] ),  // output signal
-       .iq_phase_o   (  iq_phase[j]      ),  // new phase output
+       .iq_phase_o   (  iq_phase[j]      ),  // new phase output,
+       .sin_out      (  iq_sin[j]    ),  // output sine signals
 
        // not using 2nd quadrature for most iq's: multipliers will be
        // synthesized away by Vivado
@@ -437,6 +444,7 @@ generate for (j = 7; j < 8; j = j+1) begin
        .signal_o     (  output_signal[j] ),  // output signal
        .signal2_o    (  output_signal[j*2]), // output signal 2
        .iq_phase_o   (  iq_phase[j]    ),   // new phase output
+       .sin_out      (  iq_sin[j]  ),
 
        // communication with PS
        .addr  ( sys_addr[16-1:0] ),
@@ -448,8 +456,12 @@ generate for (j = 7; j < 8; j = j+1) begin
      );
 end endgenerate
 
-assign iq_phase_5_o = iq_phase[5];
-assign iq_phase_6_o = iq_phase[6];
-assign iq_phase_7_o = iq_phase[7];
+assign iq0_phase_o = iq_phase[5];
+assign iq1_phase_o = iq_phase[6];
+assign iq2_phase_o = iq_phase[7];
+
+assign iq0_sin_o = iq_sin[5];
+assign iq1_sin_o = iq_sin[6];
+assign iq2_sin_o = iq_sin[7];
 
 endmodule
