@@ -620,6 +620,13 @@ wire  [ 24-1: 0] pwm_cfg_b;
 wire  [ 24-1: 0] pwm_cfg_c;
 wire  [ 24-1: 0] pwm_cfg_d;
 
+wire [16-1:0] pwm_freq_div_a;
+wire [16-1:0] pwm_freq_div_b;
+wire [16-1:0] pwm_freq_div_c;
+wire [16-1:0] pwm_freq_div_d;
+
+wire  [ 4-1 : 0] pwm_mode ;
+
 red_pitaya_ams i_ams (
    // power test
   .clk_i           (  adc_clk                    ),  // clock
@@ -629,8 +636,13 @@ red_pitaya_ams i_ams (
   .dac_b_o         (  pwm_cfg_b                  ),
   .dac_c_o         (  pwm_cfg_c                  ),
   .dac_d_o         (  pwm_cfg_d                  ),
-  .pwm0_i 		   (  pwm_signals[0]             ),
-  .pwm1_i 		   (  pwm_signals[1]             ),
+  .pwm_freq_div_a_o(  pwm_freq_div_a             ),
+  .pwm_freq_div_b_o(  pwm_freq_div_b             ),
+  .pwm_freq_div_c_o(  pwm_freq_div_c             ),
+  .pwm_freq_div_d_o(  pwm_freq_div_d             ),
+  .pwm_mode_o      (  pwm_mode                   ),
+  .pwm0_i 		     (  pwm_signals[0]             ),
+  .pwm1_i 		     (  pwm_signals[1]             ),
    // System bus
   .sys_addr        (  sys_addr                   ),  // address
   .sys_wdata       (  sys_wdata                  ),  // write data
@@ -644,6 +656,7 @@ red_pitaya_ams i_ams (
 
 
 wire  [ 14-1: 0] pwm_signals[4-1:0];
+wire  [16-1:  0] pwm_freq_div_a, pwm_freq_div_b, pwm_freq_div_c, pwm_freq_div_d;
 
 red_pitaya_pwm pwm [4-1:0] (
   // system signals
@@ -652,6 +665,8 @@ red_pitaya_pwm pwm [4-1:0] (
   // configuration
   .cfg   ({pwm_cfg_d, pwm_cfg_c, pwm_cfg_b, pwm_cfg_a}),
   //.signal_i ({pwm_signals[3],pwm_signals[2],pwm_signals[1],pwm_signals[0]}),
+  .freq_div({pwm_freq_div_d, pwm_freq_div_c, pwm_freq_div_b, pwm_freq_div_a}),
+  .mode_select({pwm_mode[3], pwm_mode[2], pwm_mode[1], pwm_mode[0]}),
   // PWM outputs
   .pwm_o (dac_pwm_o),
   .pwm_s ()
