@@ -46,10 +46,19 @@ module red_pitaya_ams (
    output reg [ 24-1: 0] dac_a_o         ,  // values used for
    output reg [ 24-1: 0] dac_b_o         ,  // conversion into PWM signal
    output reg [ 24-1: 0] dac_c_o         ,  // 
-   output reg [ 24-1: 0] dac_d_o         ,  // 
+   output reg [ 24-1: 0] dac_d_o         ,  //
+
    input      [ 14-1: 0] pwm0_i          ,  // 14 bit inputs for compatibility and future upgrades;
-  								  	        // right now only 12 bits are used  
-   input      [ 14-1: 0] pwm1_i          ,  
+  								  	                 // right now only 12 bits are used  
+   input      [ 14-1: 0] pwm1_i          , 
+
+   // PWM frequency control outputs
+   output     [ 16-1: 0] pwm_freq_div_a_o,
+   output     [ 16-1: 0] pwm_freq_div_b_o,
+   output     [ 16-1: 0] pwm_freq_div_c_o,
+   output     [ 16-1: 0] pwm_freq_div_d_o,
+
+   output     [  4-1: 0] pwm_mode_o,
    
    // system bus
    input      [ 32-1: 0] sys_addr        ,  // bus address
@@ -62,6 +71,17 @@ module red_pitaya_ams (
    output reg            sys_ack            // bus acknowledge signal
 );
 
+reg [16-1:0] pwm_freq_div [4-1:0];
+
+assign pwm_freq_div_a_o = pwm_freq_div[0];
+assign pwm_freq_div_b_o = pwm_freq_div[1];
+assign pwm_freq_div_c_o = pwm_freq_div[2];
+assign pwm_freq_div_d_o = pwm_freq_div[3];
+
+reg [4-1:0] pwm_mode;
+
+assign pwm_mode_o = pwm_mode;
+
 //---------------------------------------------------------------------------------
 //
 //  System bus connection
@@ -72,6 +92,15 @@ if (rstn_i == 1'b0) begin
    dac_b_o     <= 24'h000000 ;
    dac_c_o     <= 24'h000000 ;
    dac_d_o     <= 24'h000000 ;
+   
+   // Initialize frequency dividers
+   pwm_freq_div[0] <= 16'd1;
+   pwm_freq_div[1] <= 16'd1;
+   pwm_freq_div[2] <= 16'd1;
+   pwm_freq_div[3] <= 16'd1;
+
+   pwm_mode        <= 4'b0000;
+
 end else begin
    dac_a_o <= cfg;
    dac_b_o <= cfg_b;
@@ -80,6 +109,14 @@ end else begin
       // if (sys_addr[19:0]==16'h24)   dac_b_o <= sys_wdata[24-1: 0] ;
       if (sys_addr[19:0]==16'h28)   dac_c_o <= sys_wdata[24-1: 0] ;
       if (sys_addr[19:0]==16'h2C)   dac_d_o <= sys_wdata[24-1: 0] ;
+
+      // control registers for frequency division values
+      if (sys_addr[19:0]==16'h30)   pwm_freq_div[0] <= sys_wdata[16-1: 0];
+      if (sys_addr[19:0]==16'h34)   pwm_freq_div[1] <= sys_wdata[16-1: 0];
+      if (sys_addr[19:0]==16'h38)   pwm_freq_div[2] <= sys_wdata[16-1: 0];
+      if (sys_addr[19:0]==16'h3C)   pwm_freq_div[3] <= sys_wdata[16-1: 0];
+
+      if (sys_addr[19:0]==16'h40)   pwm_mode        <= sys_wdata[4-1: 0] ;
    end
 end
 
@@ -93,11 +130,19 @@ if (rstn_i == 1'b0) begin
 end else begin
    sys_err <= 1'b0 ;
    casez (sys_addr[19:0])
-     20'h00020 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_a_o}          ; end
-     20'h00024 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_b_o}          ; end
-     20'h00028 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_c_o}          ; end
-     20'h0002C : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_d_o}          ; end
-       default : begin sys_ack <= sys_en;         sys_rdata <=   32'h0                           ; end
+      20'h00020 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_a_o}          ; end
+      20'h00024 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_b_o}          ; end
+      20'h00028 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_c_o}          ; end
+      20'h0002C : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_d_o}          ; end
+
+      // Add reading for frequency registers
+      20'h00030 : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[0]}  ; end
+      20'h00034 : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[1]}  ; end
+      20'h00038 : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[2]}  ; end
+      20'h0003C : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[3]}  ; end
+
+      20'h00040 : begin sys_ack <= sys_en;         sys_rdata <= {{32-4{1'b0}},  pwm_mode}         ; end
+        default : begin sys_ack <= sys_en;         sys_rdata <=   32'h0                           ; end
    endcase
 end
 

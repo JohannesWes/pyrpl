@@ -163,9 +163,13 @@ def make_asg(channel=0):
                            "offset",
                            "frequency",
                            "fm_frequency_deviation_khz",
+                           "fm_enable",  # Added FM enable toggle
                            "trigger_source",
                            "output_direct",
-                           "start_phase"]
+                           "start_phase",
+                           "reset_phase",
+                           "reset_both_phases"
+                           ]
         _setup_attributes = _gui_attributes + ["cycles_per_burst"]
 
         _DATA_OFFSET = set_DATA_OFFSET
@@ -267,6 +271,12 @@ def make_asg(channel=0):
                                             min=0,  # Minimum 0 kHz
                                             max=1000,  # Maximum 1000 kHz (1 MHz),
                                             doc="Maximum frequency deviation for FM [kHz].")
+
+        fm_enable = BoolRegister(0x48 + _VALUE_OFFSET,
+                                 bit=0,  # Specify which bit to use (default is 0)
+                                 bitmask=0x1,  # This can be kept
+                                 default=False,
+                                 doc="Enable frequency modulation based on IQ0 signal.")
 
         #
         _counter_step = IntRegister(0x10 + _VALUE_OFFSET, doc="""Each clock cycle the counter_step is increases the internal counter modulo counter_wrap.
@@ -407,6 +417,20 @@ def make_asg(channel=0):
             self.advanced_trigger_reset = True
             self.trigger_source = 'immediately'
             self.sm_reset = True
+
+        def reset_phase(self):
+            """Resets the phase of the ASG."""
+            self.sm_reset = True
+            self.sm_reset = False
+
+        def reset_both_phases(self):
+            """Resets both phases of the ASG simultaneously."""
+            # reads current value of the combined control signal register
+            regval = self._read(0x0)
+            # sets the reset bits to 1 by adressing bits 6 and 22
+            self._write(0x0, regval | 0x400040)
+            # clear reset bits
+            self._write(0x0, regval)
 
     return Asg
 

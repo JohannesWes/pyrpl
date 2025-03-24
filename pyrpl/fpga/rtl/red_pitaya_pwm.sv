@@ -37,13 +37,18 @@ module red_pitaya_pwm #(
   input  logic           clk ,  // clock
   input  logic           rstn,  // reset
   // configuration
-  input  logic [CCW-1:0] cfg ,  // no configuration but signal_i
-
+  input  logic [CCW-1:0] cfg ,  // duty cycle configuration / signal
+  input  logic [16-1:0]  freq_div,
+  input  logic           mode_select,  // 0 = normal mode, 1 = elaborate mode 
+  
   // PWM outputs
   output logic           pwm_o ,  // PWM output - driving RC
   output logic           pwm_s    // PWM synchronization
 );
 
+// Clock divider - for frequency control
+reg  [16-1:0] div_counter;
+reg           clk_enable;
 
 // main part of PWM
 reg  [ 4-1: 0] bcnt  ;
@@ -52,7 +57,22 @@ reg  [ 8-1: 0] vcnt, vcnt_r;
 reg  [ 8-1: 0] v   ;
 reg  [ 9-1: 0] v_r ; // needs an extra bit to avoid overflow
 
-// short description of what is going on:
+// Clock divider logic
+always @(posedge clk)
+if (~rstn) begin
+  div_counter <= 16'h0;
+  clk_enable <= 1'b0;
+end else begin
+  if (div_counter >= freq_div - 1) begin
+    div_counter <= 16'h0;
+    clk_enable <= 1'b1;
+  end else begin
+    div_counter <= div_counter + 1;
+    clk_enable <= 1'b0;
+  end
+end
+
+// short description of what is going on (implementing intersective PWM)
 
 // vcnt counts from 0, 1, 2, 3, ..., 255, 0, 1, 2, 3
 // vcnt_r = last cycle's vcnt
@@ -67,24 +87,40 @@ reg  [ 9-1: 0] v_r ; // needs an extra bit to avoid overflow
 
 // v_r is the sum of v and b[0], i.e. v_r alternates between upper 8 bits of config and that value +1  
 
+// PWM logic with mode selection
 always @(posedge clk)
 if (~rstn) begin
    vcnt  <=  8'h0 ;
    bcnt  <=  4'h0 ;
    pwm_o <=  1'b0 ;
-end else begin
-   vcnt   <= vcnt + 8'd1 ;
-   vcnt_r <= vcnt;
-   v_r    <= (v + b[0]) ; // add decimal bit to current value
-   if (vcnt == FULL) begin
-      bcnt <=  bcnt + 4'h1 ;
-      v    <= (bcnt == 4'hF) ? cfg[24-1:16] : v ; // new value on 16*FULL
-      b    <= (bcnt == 4'hF) ? cfg[16-1:0] : {1'b0,b[15:1]} ; // shift right
+end else if (clk_enable) begin
+   if (mode_select) begin
+      // Dithered PWM mode
+      vcnt   <= vcnt + 8'd1 ;
+      vcnt_r <= vcnt;
+      v_r    <= (v + b[0]) ; // add decimal bit to current value
+      if (vcnt == FULL) begin
+         bcnt <=  bcnt + 4'h1 ;
+         v    <= (bcnt == 4'hF) ? cfg[24-1:16] : v ; // new value on 16*FULL
+         b    <= (bcnt == 4'hF) ? cfg[16-1:0] : {1'b0,b[15:1]} ; // shift right
+      end
+      // make PWM duty cycle
+      pwm_o <= ({1'b0,vcnt_r} < v_r) ;
+   end else begin
+      // Normal mode - simple PWM without dithered modulation
+      vcnt   <= vcnt + 8'd1 ;
+      if (vcnt == FULL) begin
+         // Reset counter when needed
+         vcnt <= 8'h0;
+      end
+      // Simple PWM - just compare counter with threshold
+      pwm_o <= (vcnt < cfg[24-1:16]) ;
    end
-   // make PWM duty cycle
-   pwm_o <= ({1'b0,vcnt_r} < v_r) ;
 end
 
-assign pwm_s = (bcnt == 4'hF) && (vcnt == (FULL-1)) ; // latch one before
+// Modify sync signal based on mode
+assign pwm_s = mode_select ? 
+               ((bcnt == 4'hF) && (vcnt == (FULL-1)) && clk_enable) : // dithered mode
+               ((vcnt == (FULL-1)) && clk_enable);                     // normal mode
 
 endmodule: red_pitaya_pwm
