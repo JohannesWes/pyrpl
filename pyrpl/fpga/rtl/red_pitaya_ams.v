@@ -42,23 +42,24 @@ module red_pitaya_ams (
    // ADC
    input                 clk_i           ,  // clock
    input                 rstn_i          ,  // reset - active low
-   // PWM DAC
-   output reg [ 24-1: 0] dac_a_o         ,  // values used for
-   output reg [ 24-1: 0] dac_b_o         ,  // conversion into PWM signal
-   output reg [ 24-1: 0] dac_c_o         ,  // 
-   output reg [ 24-1: 0] dac_d_o         ,  //
 
-   input      [ 14-1: 0] pwm0_i          ,  // 14 bit inputs for compatibility and future upgrades;
-  								  	                 // right now only 12 bits are used  
-   input      [ 14-1: 0] pwm1_i          , 
+   // PWM DAC configuration
+   output reg [ 24-1: 0] dac_a_o         ,  // values used for PWM 0
+   output reg [ 24-1: 0] dac_b_o         ,  // values used for PWM 1
+   output reg [ 24-1: 0] dac_c_o         ,  // values used for PWM 2
+   output reg [ 24-1: 0] dac_d_o         ,  // values used for PWM 3
 
-   // PWM frequency control outputs
-   output     [ 16-1: 0] pwm_freq_div_a_o,
-   output     [ 16-1: 0] pwm_freq_div_b_o,
-   output     [ 16-1: 0] pwm_freq_div_c_o,
-   output     [ 16-1: 0] pwm_freq_div_d_o,
+   input      [ 14-1: 0] pwm0_i          ,  // Input from DSP for PWM 0
+   input      [ 14-1: 0] pwm1_i          ,  // Input from DSP for PWM 1
 
-   output     [  4-1: 0] pwm_mode_o,
+   // PWM frequency control output - individual ports instead of array
+   output reg [ 32-1: 0] pwm_freq_div_o0 ,  // PWM0 frequency divider
+   output reg [ 32-1: 0] pwm_freq_div_o1 ,  // PWM1 frequency divider
+   output reg [ 32-1: 0] pwm_freq_div_o2 ,  // PWM2 frequency divider
+   output reg [ 32-1: 0] pwm_freq_div_o3 ,  // PWM3 frequency divider
+
+   // PWM output mode ("dithered" or "normal")
+   output reg [  4-1: 0] pwm_mode_o,
    
    // system bus
    input      [ 32-1: 0] sys_addr        ,  // bus address
@@ -71,16 +72,6 @@ module red_pitaya_ams (
    output reg            sys_ack            // bus acknowledge signal
 );
 
-reg [16-1:0] pwm_freq_div [4-1:0];
-
-assign pwm_freq_div_a_o = pwm_freq_div[0];
-assign pwm_freq_div_b_o = pwm_freq_div[1];
-assign pwm_freq_div_c_o = pwm_freq_div[2];
-assign pwm_freq_div_d_o = pwm_freq_div[3];
-
-reg [4-1:0] pwm_mode;
-
-assign pwm_mode_o = pwm_mode;
 
 //---------------------------------------------------------------------------------
 //
@@ -94,12 +85,12 @@ if (rstn_i == 1'b0) begin
    dac_d_o     <= 24'h000000 ;
    
    // Initialize frequency dividers
-   pwm_freq_div[0] <= 16'd1;
-   pwm_freq_div[1] <= 16'd1;
-   pwm_freq_div[2] <= 16'd1;
-   pwm_freq_div[3] <= 16'd1;
+   pwm_freq_div_o0 <= 32'd1;
+   pwm_freq_div_o1 <= 32'd1;
+   pwm_freq_div_o2 <= 32'd1;
+   pwm_freq_div_o3 <= 32'd1;
 
-   pwm_mode        <= 4'b0000;
+   pwm_mode_o      <= 4'b0000;
 
 end else begin
    dac_a_o <= cfg;
@@ -111,12 +102,12 @@ end else begin
       if (sys_addr[19:0]==16'h2C)   dac_d_o <= sys_wdata[24-1: 0] ;
 
       // control registers for frequency division values
-      if (sys_addr[19:0]==16'h30)   pwm_freq_div[0] <= sys_wdata[16-1: 0];
-      if (sys_addr[19:0]==16'h34)   pwm_freq_div[1] <= sys_wdata[16-1: 0];
-      if (sys_addr[19:0]==16'h38)   pwm_freq_div[2] <= sys_wdata[16-1: 0];
-      if (sys_addr[19:0]==16'h3C)   pwm_freq_div[3] <= sys_wdata[16-1: 0];
+      if (sys_addr[19:0]==16'h30)   pwm_freq_div_o0 <= sys_wdata[32-1: 0];
+      if (sys_addr[19:0]==16'h34)   pwm_freq_div_o1 <= sys_wdata[32-1: 0];
+      if (sys_addr[19:0]==16'h38)   pwm_freq_div_o2 <= sys_wdata[32-1: 0];
+      if (sys_addr[19:0]==16'h3C)   pwm_freq_div_o3 <= sys_wdata[32-1: 0];
 
-      if (sys_addr[19:0]==16'h40)   pwm_mode        <= sys_wdata[4-1: 0] ;
+      if (sys_addr[19:0]==16'h40)   pwm_mode_o        <= sys_wdata[4-1: 0] ;
    end
 end
 
@@ -130,18 +121,18 @@ if (rstn_i == 1'b0) begin
 end else begin
    sys_err <= 1'b0 ;
    casez (sys_addr[19:0])
-      20'h00020 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_a_o}          ; end
-      20'h00024 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_b_o}          ; end
-      20'h00028 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_c_o}          ; end
-      20'h0002C : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_d_o}          ; end
+      20'h00020 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_a_o}           ; end
+      20'h00024 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_b_o}           ; end
+      20'h00028 : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_c_o}           ; end
+      20'h0002C : begin sys_ack <= sys_en;         sys_rdata <= {{32-24{1'b0}}, dac_d_o}           ; end
 
       // Add reading for frequency registers
-      20'h00030 : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[0]}  ; end
-      20'h00034 : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[1]}  ; end
-      20'h00038 : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[2]}  ; end
-      20'h0003C : begin sys_ack <= sys_en;         sys_rdata <= {{32-16{1'b0}}, pwm_freq_div[3]}  ; end
+      20'h00030 : begin sys_ack <= sys_en; sys_rdata <= pwm_freq_div_o0; end
+      20'h00034 : begin sys_ack <= sys_en; sys_rdata <= pwm_freq_div_o1; end
+      20'h00038 : begin sys_ack <= sys_en; sys_rdata <= pwm_freq_div_o2; end
+      20'h0003C : begin sys_ack <= sys_en; sys_rdata <= pwm_freq_div_o3; end
 
-      20'h00040 : begin sys_ack <= sys_en;         sys_rdata <= {{32-4{1'b0}},  pwm_mode}         ; end
+      20'h00040 : begin sys_ack <= sys_en;         sys_rdata <= {{32-4{1'b0}},  pwm_mode_o}        ; end
         default : begin sys_ack <= sys_en;         sys_rdata <=   32'h0                           ; end
    endcase
 end

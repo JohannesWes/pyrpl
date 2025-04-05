@@ -46,7 +46,7 @@ requirements = ['scp',
                 'numpy>=1.9',
                 'paramiko>=2.0',
                 'nose>=1.0',
-                'PyQt5<=5.14',  # cannot be installed with pip, if in conda you can use conda install pyqt<5.15
+                # 'PyQt5<=5.14',  # cannot be installed with pip, if in conda you can use conda install pyqt<5.15
                 'qtpy<=1.10',  # qtpy 1.11 contains breaking API changes related to pyqtSignals
                 'nbconvert',
                 'jupyter-client']
@@ -135,6 +135,11 @@ setup(name='pyrpl',
                    'Programming Language :: Python :: 3.4',
                    'Programming Language :: Python :: 3.5',
                    'Programming Language :: Python :: 3.6',
+                   'Programming Language :: Python :: 3.6',
+                   'Programming Language :: Python :: 3.7',
+                   'Programming Language :: Python :: 3.8',
+                   'Programming Language :: Python :: 3.9',
+                   'Programming Language :: Python :: 3.10',
                    'Programming Language :: C',
                    'Natural Language :: English',
                    'Development Status :: 4 - Beta',

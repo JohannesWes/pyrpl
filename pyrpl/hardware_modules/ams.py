@@ -16,13 +16,28 @@ class AMS(HardwareModule):
     dac2 = PWMRegister(0x28, doc="PWM output 2 [V]")
     dac3 = PWMRegister(0x2C, doc="PWM output 3 [V]")
 
-    # Add frequency control registers (32-bit)
+    # Add individual frequency control registers (16-bit)
     pwm0_freq_div = IntRegister(0x30, bits=16, doc="PWM0 frequency divider", default=1)
     pwm1_freq_div = IntRegister(0x34, bits=16, doc="PWM1 frequency divider", default=1)
     pwm2_freq_div = IntRegister(0x38, bits=16, doc="PWM2 frequency divider", default=1)
     pwm3_freq_div = IntRegister(0x3C, bits=16, doc="PWM3 frequency divider", default=1)
 
     pwm_mode = IntRegister(0x40, bits=4, doc="PWM mode (0=normal, 1=dithered)", default=0x0000)
+
+    # Add these class variables
+    _pwm_channel_map = {
+        0: 'pwm0_freq_div',
+        1: 'pwm1_freq_div',
+        2: 'pwm2_freq_div',
+        3: 'pwm3_freq_div'
+    }
+
+    _dac_channel_map = {
+        0: 'dac0',
+        1: 'dac1',
+        2: 'dac2',
+        3: 'dac3'
+    }
 
     def _setup(self):  # the function is here for its docstring to be used by the metaclass.
         """
@@ -119,25 +134,20 @@ class AMS(HardwareModule):
                 # Each full sequence takes 16 repetitions in dithered mode
                 base_freq = base_freq / 16  # ~30.5 kHz
             else:
-                # In normal mode, no dithering
+                # In normal mode, no dithering; somehow divvidddddding by 2 generates the right frequency
                 freq_hz = freq_hz / 2
 
             divider = int(round(base_freq / freq_hz))
 
-            # Ensure divider is within valid range (32 bits)
-            divider = max(1, min(divider, 0xFFFFFFFF))
+            # Ensure divider is within valid range (16 bits)
+            divider = max(1, min(divider, 0xFFFF))
 
-        self._logger.debug(
-            f"Setting PWM{channel} frequency to {freq_hz:.2f} Hz (hardware freq: {freq_hz * 4 if self.get_pwm_mode(channel) == 'normal' else freq_hz:.2f} Hz, divider={divider})")
+        # wrong information currently
+        # self._logger.debug(
+        #     f"Setting PWM{channel} frequency to {freq_hz:.2f} Hz (hardware freq: {freq_hz * 4 if self.get_pwm_mode(channel) == 'normal' else freq_hz:.2f} Hz, divider={divider})")
 
-        if channel == 0:
-            self.pwm0_freq_div = divider
-        elif channel == 1:
-            self.pwm1_freq_div = divider
-        elif channel == 2:
-            self.pwm2_freq_div = divider
-        elif channel == 3:
-            self.pwm3_freq_div = divider
+        if channel in self._pwm_channel_map:
+            setattr(self, self._pwm_channel_map[channel], divider)
         else:
             raise ValueError(f"Invalid PWM channel: {channel}")
 
@@ -164,14 +174,8 @@ class AMS(HardwareModule):
             # Each full sequence takes 16 repetitions in dithered mode
             base_freq = base_freq / 16  # ~30.5 kHz
 
-        if channel == 0:
-            divider = self.pwm0_freq_div
-        elif channel == 1:
-            divider = self.pwm1_freq_div
-        elif channel == 2:
-            divider = self.pwm2_freq_div
-        elif channel == 3:
-            divider = self.pwm3_freq_div
+        if channel in self._pwm_channel_map:
+            divider = getattr(self, self._pwm_channel_map[channel])
         else:
             raise ValueError(f"Invalid PWM channel: {channel}")
 
@@ -190,7 +194,7 @@ class AMS(HardwareModule):
         """
         Set the PWM output to represent a current value according to specifications:
 
-        1. Current within ±250mA: 10 Hz, duty cycle 10-90% (50%=0mA)
+        1. Current within ±250mA: 40 Hz, duty cycle 10-90% (50%=0mA)
         2. Current out of range: 20 Hz, duty cycle 10-90%
         3. Error state: 30 Hz
 
@@ -210,16 +214,16 @@ class AMS(HardwareModule):
             # Use 50% duty cycle in error state
             duty = 0.5
         elif abs(current_ma) <= 250:
-            # Normal mode: 10 Hz
-            self.set_pwm_frequency(channel, 10)
+            # Normal mode: 40 Hz
+            self.set_pwm_frequency(channel, 40)
             # Map current to duty cycle: -250mA -> 10%, 0mA -> 50%, +250mA -> 90%
-            duty = 0.5 + (current_ma / 500)
+            duty = 0.5 + current_ma * 0.8 / 500
         else:
             # Out of range mode: 20 Hz
             self.set_pwm_frequency(channel, 20)
             # Clamp current to ±250mA for duty cycle calculation
             clamped_current = max(-250, min(current_ma, 250))
-            duty = 0.5 + (clamped_current / 500)
+            duty = 0.5 + clamped_current * 0.8 / 500
 
         # Ensure duty cycle is within bounds
         duty = max(0.1, min(0.9, duty))
@@ -230,14 +234,8 @@ class AMS(HardwareModule):
 
         self._logger.debug(f"Setting PWM{channel} duty cycle to {duty:.2f} (voltage={voltage:.2f}V)")
 
-        # Set the appropriate channel
-        if channel == 0:
-            self.dac0 = voltage
-        elif channel == 1:
-            self.dac1 = voltage
-        elif channel == 2:
-            self.dac2 = voltage
-        elif channel == 3:
-            self.dac3 = voltage
+        if channel in self._dac_channel_map:
+            setattr(self, self._dac_channel_map[channel], voltage)
+            print(f"Setting PWM{channel} voltage to {voltage:.2f}V")
         else:
             raise ValueError(f"Invalid PWM channel: {channel}")

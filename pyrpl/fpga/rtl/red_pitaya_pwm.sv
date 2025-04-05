@@ -38,16 +38,16 @@ module red_pitaya_pwm #(
   input  logic           rstn,  // reset
   // configuration
   input  logic [CCW-1:0] cfg ,  // duty cycle configuration / signal
-  input  logic [16-1:0]  freq_div,
+  input  logic [32-1:0]  freq_div,
   input  logic           mode_select,  // 0 = normal mode, 1 = elaborate mode 
   
   // PWM outputs
-  output logic           pwm_o ,  // PWM output - driving RC
+  output logic           pwm_o ,  // PWM output
   output logic           pwm_s    // PWM synchronization
 );
 
 // Clock divider - for frequency control
-reg  [16-1:0] div_counter;
+reg  [32-1:0] div_counter;
 reg           clk_enable;
 
 // main part of PWM
@@ -60,11 +60,11 @@ reg  [ 9-1: 0] v_r ; // needs an extra bit to avoid overflow
 // Clock divider logic
 always @(posedge clk)
 if (~rstn) begin
-  div_counter <= 16'h0;
+  div_counter <= 32'h0;
   clk_enable <= 1'b0;
 end else begin
   if (div_counter >= freq_div - 1) begin
-    div_counter <= 16'h0;
+    div_counter <= 32'h0;
     clk_enable <= 1'b1;
   end else begin
     div_counter <= div_counter + 1;

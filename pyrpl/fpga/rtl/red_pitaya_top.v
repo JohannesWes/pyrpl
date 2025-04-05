@@ -418,7 +418,8 @@ red_pitaya_hk i_hk (
   .sys_ren         (  sys_ren[0]                 ),  // read enable
   .sys_rdata       (  sys_rdata[ 0*32+31: 0*32]  ),  // read data
   .sys_err         (  sys_err[0]                 ),  // error indicator
-  .sys_ack         (  sys_ack[0]                 )   // acknowledge signal
+  .sys_ack         (  sys_ack[0]                 ),   // acknowledge signal
+  .digital_pwm     (  dac_pwm_o                  )   // Digital PWM output
 );
 
 IOBUF i_iobufp [8-1:0] (.O(exp_p_in), .IO(exp_p_io), .I(exp_p_out), .T(~exp_p_dir) );
@@ -615,31 +616,36 @@ red_pitaya_dsp i_dsp (
 //  Analog mixed signals
 //  XADC and slow PWM DAC control
 
-wire  [ 24-1: 0] pwm_cfg_a;
-wire  [ 24-1: 0] pwm_cfg_b;
-wire  [ 24-1: 0] pwm_cfg_c;
-wire  [ 24-1: 0] pwm_cfg_d;
 
-wire [16-1:0] pwm_freq_div_a;
-wire [16-1:0] pwm_freq_div_b;
-wire [16-1:0] pwm_freq_div_c;
-wire [16-1:0] pwm_freq_div_d;
+wire  [ 32-1: 0] pwm_freq_div [3:0];  // Local array for PWM frequency dividers
+wire  [ 24-1:0]  pwm_cfg_arr  [3:0];  // values to set PWM duty cycle - read/write in AMS module, so routing to PWM module is needed
+wire  [ 4-1 : 0] pwm_mode ;   // "normal" or "dithered" PWM mode
 
-wire  [ 4-1 : 0] pwm_mode ;
+// Individual frequency divider wires
+wire [ 32-1: 0] pwm_freq_div_0;
+wire [ 32-1: 0] pwm_freq_div_1;
+wire [ 32-1: 0] pwm_freq_div_2;
+wire [ 32-1: 0] pwm_freq_div_3;
+
+// Map individual signals to array for easier handling downstream
+assign pwm_freq_div[0] = pwm_freq_div_0;
+assign pwm_freq_div[1] = pwm_freq_div_1;
+assign pwm_freq_div[2] = pwm_freq_div_2;
+assign pwm_freq_div[3] = pwm_freq_div_3;
 
 red_pitaya_ams i_ams (
    // power test
   .clk_i           (  adc_clk                    ),  // clock
   .rstn_i          (  adc_rstn                   ),  // reset - active low
   // PWM configuration
-  .dac_a_o         (  pwm_cfg_a                  ),
-  .dac_b_o         (  pwm_cfg_b                  ),
-  .dac_c_o         (  pwm_cfg_c                  ),
-  .dac_d_o         (  pwm_cfg_d                  ),
-  .pwm_freq_div_a_o(  pwm_freq_div_a             ),
-  .pwm_freq_div_b_o(  pwm_freq_div_b             ),
-  .pwm_freq_div_c_o(  pwm_freq_div_c             ),
-  .pwm_freq_div_d_o(  pwm_freq_div_d             ),
+  .dac_a_o         (  pwm_cfg_arr[0]             ),
+  .dac_b_o         (  pwm_cfg_arr[1]             ),
+  .dac_c_o         (  pwm_cfg_arr[2]             ),
+  .dac_d_o         (  pwm_cfg_arr[3]             ),
+  .pwm_freq_div_o0 (  pwm_freq_div_0             ),
+  .pwm_freq_div_o1 (  pwm_freq_div_1             ),
+  .pwm_freq_div_o2 (  pwm_freq_div_2             ),
+  .pwm_freq_div_o3 (  pwm_freq_div_3             ),
   .pwm_mode_o      (  pwm_mode                   ),
   .pwm0_i 		     (  pwm_signals[0]             ),
   .pwm1_i 		     (  pwm_signals[1]             ),
@@ -656,21 +662,24 @@ red_pitaya_ams i_ams (
 
 
 wire  [ 14-1: 0] pwm_signals[4-1:0];
-wire  [16-1:  0] pwm_freq_div_a, pwm_freq_div_b, pwm_freq_div_c, pwm_freq_div_d;
 
-red_pitaya_pwm pwm [4-1:0] (
-  // system signals
-  .clk   (pwm_clk ),
-  .rstn  (pwm_rstn),
-  // configuration
-  .cfg   ({pwm_cfg_d, pwm_cfg_c, pwm_cfg_b, pwm_cfg_a}),
-  //.signal_i ({pwm_signals[3],pwm_signals[2],pwm_signals[1],pwm_signals[0]}),
-  .freq_div({pwm_freq_div_d, pwm_freq_div_c, pwm_freq_div_b, pwm_freq_div_a}),
-  .mode_select({pwm_mode[3], pwm_mode[2], pwm_mode[1], pwm_mode[0]}),
-  // PWM outputs
-  .pwm_o (dac_pwm_o),
-  .pwm_s ()
-);
+genvar i;
+generate
+    for (i = 0; i < 4; i = i + 1) begin : pwm_gen_inst
+        red_pitaya_pwm pwm_inst (
+          // system signals
+          .clk         (pwm_clk         ),
+          .rstn        (pwm_rstn        ),
+          // configuration (Connect individual signals to each instance)
+          .cfg         (pwm_cfg_arr[i]  ),
+          .freq_div    (pwm_freq_div[i]),
+          .mode_select (pwm_mode[i]     ), // pwm_mode comes from i_ams [3:0]
+          // PWM outputs (Connect each instance to one bit of the output)
+          .pwm_o       (dac_pwm_o[i]    ),
+          .pwm_s       (/* unconnected */) // Connect if sync signal is needed elsewhere
+        );
+    end
+endgenerate
 
 //---------------------------------------------------------------------------------
 //  Daisy chain
