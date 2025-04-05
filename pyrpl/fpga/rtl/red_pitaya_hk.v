@@ -23,7 +23,7 @@
  *
  * Beside that it is currently also used to test expansion connector and for
  * driving LEDs.
- * 
+ *
  */
 
 module red_pitaya_hk #(
@@ -45,6 +45,7 @@ module red_pitaya_hk #(
   input      [DWE-1:0] exp_n_dat_i,  //
   output reg [DWE-1:0] exp_n_dat_o,  //
   output reg [DWE-1:0] exp_n_dir_o,  //
+  input      [4-1  :0] digital_pwm, // Digital PWM values
   // System bus
   input      [ 32-1:0] sys_addr   ,  // bus address
   input      [ 32-1:0] sys_wdata  ,  // bus write data
@@ -55,6 +56,13 @@ module red_pitaya_hk #(
   output reg           sys_err    ,  // bus error indicator
   output reg           sys_ack       // bus acknowledge signal
 );
+
+// Flag to control whether PWM signals are directly routed to expansion pins
+reg            pwm_direct_output;
+
+// Store system bus writes to exp_p_dat_o separately
+reg [DWE-1:0]  sys_exp_p_dat;
+reg [DWE-1:0]  sys_exp_p_dir;
 
 //---------------------------------------------------------------------------------
 //
@@ -111,24 +119,51 @@ assign id_value[ 3: 0] =  4'h1; // board type   1 - release 1
 
 //---------------------------------------------------------------------------------
 //
-//  System bus connection
+//  System bus connection - handle register writes
 
 always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
-  led_o        <= {DWL{1'b0}};
-  exp_p_dat_o  <= {DWE{1'b0}};
-  exp_p_dir_o  <= {DWE{1'b0}};
-  exp_n_dat_o  <= {DWE{1'b0}};
-  exp_n_dir_o  <= {DWE{1'b0}};
-end else if (sys_wen) begin
-  if (sys_addr[19:0]==20'h0c)   digital_loop <= sys_wdata[0];
+  led_o            <= {DWL{1'b0}};
+  sys_exp_p_dat    <= {DWE{1'b0}};
+  sys_exp_p_dir    <= {DWE{1'b0}};
+  exp_n_dat_o      <= {DWE{1'b0}};
+  exp_n_dir_o      <= {DWE{1'b0}};
+  pwm_direct_output <= 1'b0;  // Default to disabled
+  digital_loop     <= 1'b0;
+end else begin
+  // Handle system bus writes
+  if (sys_wen) begin
+    if (sys_addr[19:0]==20'h0c)   digital_loop      <= sys_wdata[0];
+    if (sys_addr[19:0]==20'h10)   sys_exp_p_dir     <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h14)   exp_n_dir_o       <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h18)   sys_exp_p_dat     <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h1C)   exp_n_dat_o       <= sys_wdata[DWE-1:0];
+    if (sys_addr[19:0]==20'h28)   pwm_direct_output <= sys_wdata[0];
+    if (sys_addr[19:0]==20'h30)   led_o             <= sys_wdata[DWL-1:0];
+  end
+end
 
-  if (sys_addr[19:0]==20'h10)   exp_p_dir_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h14)   exp_n_dir_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h18)   exp_p_dat_o  <= sys_wdata[DWE-1:0];
-  if (sys_addr[19:0]==20'h1C)   exp_n_dat_o  <= sys_wdata[DWE-1:0];
+//---------------------------------------------------------------------------------
+//
+// Continuous PWM routing - separate from system bus handling
+// This ensures PWM signals are always routed to outputs when enabled
 
-  if (sys_addr[19:0]==20'h30)   led_o        <= sys_wdata[DWL-1:0];
+always @(posedge clk_i) begin
+  if (pwm_direct_output) begin
+    // In PWM direct mode:
+    // - Bits 3:0 are controlled by PWM
+    // - Bits 7:4 are controlled by system bus
+    exp_p_dat_o[3:0] <= digital_pwm[3:0];
+    exp_p_dat_o[DWE-1:4] <= sys_exp_p_dat[DWE-1:4];
+    
+    // Force directions for PWM pins to output
+    exp_p_dir_o[3:0] <= 4'b1111;
+    exp_p_dir_o[DWE-1:4] <= sys_exp_p_dir[DWE-1:4];
+  end else begin
+    // In normal mode, use system bus values
+    exp_p_dat_o <= sys_exp_p_dat;
+    exp_p_dir_o <= sys_exp_p_dir;
+  end
 end
 
 wire sys_en;
@@ -138,25 +173,29 @@ always @(posedge clk_i)
 if (rstn_i == 1'b0) begin
   sys_err <= 1'b0;
   sys_ack <= 1'b0;
+  sys_rdata <= 32'h0;
 end else begin
   sys_err <= 1'b0;
+  sys_ack <= sys_en;
 
   casez (sys_addr[19:0])
-    20'h00000: begin sys_ack <= sys_en;  sys_rdata <= {                id_value          }; end
-    20'h00004: begin sys_ack <= sys_en;  sys_rdata <= {                dna_value[32-1: 0]}; end
-    20'h00008: begin sys_ack <= sys_en;  sys_rdata <= {{64- 57{1'b0}}, dna_value[57-1:32]}; end
-    20'h0000c: begin sys_ack <= sys_en;  sys_rdata <= {{32-  1{1'b0}}, digital_loop      }; end
+    20'h00000: begin sys_rdata <= {                id_value          }; end
+    20'h00004: begin sys_rdata <= {                dna_value[32-1: 0]}; end
+    20'h00008: begin sys_rdata <= {{32-25{1'b0}}, dna_value[57-1:32]}; end
+    20'h0000c: begin sys_rdata <= {{32-  1{1'b0}}, digital_loop      }; end
 
-    20'h00010: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dir_o}       ; end
-    20'h00014: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dir_o}       ; end
-    20'h00018: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_o}       ; end
-    20'h0001C: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_o}       ; end
-    20'h00020: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_i}       ; end
-    20'h00024: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_i}       ; end
+    20'h00010: begin sys_rdata <= {{32-DWE{1'b0}}, exp_p_dir_o}       ; end
+    20'h00014: begin sys_rdata <= {{32-DWE{1'b0}}, exp_n_dir_o}       ; end
+    20'h00018: begin sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_o}       ; end
+    20'h0001C: begin sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_o}       ; end
+    20'h00020: begin sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_i}       ; end
+    20'h00024: begin sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_i}       ; end
+    
+    20'h00028: begin sys_rdata <= {{32-  1{1'b0}}, pwm_direct_output} ; end
 
-    20'h00030: begin sys_ack <= sys_en;  sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
+    20'h00030: begin sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
 
-      default: begin sys_ack <= sys_en;  sys_rdata <=  32'h0                              ; end
+    default: begin sys_rdata <=  32'h0                              ; end
   endcase
 end
 
