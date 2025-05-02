@@ -46,6 +46,8 @@ module red_pitaya_hk #(
   output reg [DWE-1:0] exp_n_dat_o,  //
   output reg [DWE-1:0] exp_n_dir_o,  //
   input      [4-1  :0] digital_pwm, // Digital PWM values
+
+  input                trigger_output,
   // System bus
   input      [ 32-1:0] sys_addr   ,  // bus address
   input      [ 32-1:0] sys_wdata  ,  // bus write data
@@ -154,15 +156,20 @@ always @(posedge clk_i) begin
     // - Bits 3:0 are controlled by PWM
     // - Bits 7:4 are controlled by system bus
     exp_p_dat_o[3:0] <= digital_pwm[3:0];
-    exp_p_dat_o[DWE-1:4] <= sys_exp_p_dat[DWE-1:4];
+    exp_p_dat_o[DWE-1] <= trigger_output;                // Set MSB/highest pin to trigger_output
+    exp_p_dat_o[DWE-2:4] <= sys_exp_p_dat[DWE-2:4];
     
     // Force directions for PWM pins to output
     exp_p_dir_o[3:0] <= 4'b1111;
-    exp_p_dir_o[DWE-1:4] <= sys_exp_p_dir[DWE-1:4];
+    exp_p_dir_o[DWE-1] <= 1'b1;                          // Force MSB/highest pin direction to output
+    exp_p_dir_o[DWE-2:4] <= sys_exp_p_dir[DWE-2:4];
   end else begin
     // In normal mode, use system bus values
-    exp_p_dat_o <= sys_exp_p_dat;
-    exp_p_dir_o <= sys_exp_p_dir;
+    exp_p_dat_o[DWE-1] <= trigger_output;                // Set MSB to trigger_output
+    exp_p_dat_o[DWE-2:0] <= sys_exp_p_dat[DWE-2:0];      // Rest from system bus
+
+    exp_p_dir_o[DWE-1] <= 1'b1;                          // Force MSB direction to output
+    exp_p_dir_o[DWE-2:0] <= sys_exp_p_dir[DWE-2:0];      // Rest from system bus
   end
 end
 

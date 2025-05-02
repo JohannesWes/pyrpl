@@ -2,7 +2,7 @@
  * $Id: red_pitaya_top.v 1271 2014-02-25 12:32:34Z matej.oblak $
  *
  * @brief Red Pitaya TOP module. It connects external pins and PS part with 
- *        other application modules. 
+ *        other application modules. Includes the custom Scan module.
  *
  * @Author Matej Oblak
  *
@@ -16,7 +16,6 @@
 ###############################################################################
 #    pyrpl - DSP servo controller for quantum optics with the RedPitaya
 #    Copyright (C) 2014-2016  Leonhard Neuhaus  (neuhaus@spectro.jussieu.fr)
-#
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
 #    the Free Software Foundation, either version 3 of the License, or
@@ -37,7 +36,7 @@
  * GENERAL DESCRIPTION:
  *
  * Top module connects PS part with rest of Red Pitaya applications.  
- *
+ * Includes HK, Scope, ASG, DSP, AMS, PWM, and the custom Scan module.
  *
  *                   /-------\      
  *   PS DDR <------> |  PS   |      AXI <-> custom bus
@@ -45,13 +44,13 @@
  *   PS CLK -------> |  ARM  |              |
  *                   \-------/              |
  *                                          |
- *                            /-------\     |
- *                         -> | SCOPE | <---+
- *                         |  \-------/     |
- *                         |                |
- *            /--------\   |   /-----\      |
- *   ADC ---> |        | --+-> |     |      |
- *            | ANALOG |       | DSP | <----+
+ *                            /-------\     |     /-------\     |
+ *                         -> | SCOPE | <---+---->| SCAN  | <---+
+ *                         |  \-------/     |     \-------/     |
+ *                         |                |                   |
+ *            /--------\   |   /-----\      |                   |
+ *   ADC ---> |        | --+-> |     |      |                   |
+ *            | ANALOG |       | DSP | <----+-------------------+---> Trigger Out
  *   DAC <--- |        | <---- |     |      |
  *            \--------/   ^   \-----/      |
  *                         |                |
@@ -61,23 +60,22 @@
  *                                          |
  *             /--------\                   |
  *    RX ----> |        |                   |
- *   SATA      | DAISY  | <-----------------+
+ *   SATA      | DAISY  | <-----------------+ // Disabled in this version
  *    TX <---- |        | 
  *             \--------/ 
  *               |    |
  *               |    |
  *               (FREE)
  *
- *
  * Inside analog module, ADC data is translated from unsigned neg-slope into
  * two's complement. Similar is done on DAC data.
- *
  * Scope module stores data from ADC into RAM, arbitrary signal generator (ASG)
  * sends data from RAM to DAC. MIMO PID uses ADC ADC as input and DAC as its output.
  *
+ * Scan module performs triggered sweeps. Accumulates and stores data similar to scope.
+ *
  * Daisy chain connects with other boards with fast serial link. Data which is
  * send and received is at the moment undefined. This is left for the user.
- * 
  */
 
 module red_pitaya_top #(
@@ -250,12 +248,7 @@ assign ps_sys_rdata = sys_rdata[sys_addr[22:20]*32+:32];
 assign ps_sys_err   = |(sys_cs & sys_err);
 assign ps_sys_ack   = |(sys_cs & sys_ack);
 
-// unused system bus slave ports
-
-assign sys_rdata[5*32+:32] = 32'h0; 
-assign sys_err  [5       ] =  1'b0;
-assign sys_ack  [5       ] =  1'b1;
-
+// unused system bus slave ports (Slot 6 and 7)
 assign sys_rdata[6*32+:32] = 32'h0; 
 assign sys_err  [6       ] =  1'b0;
 assign sys_ack  [6       ] =  1'b1;
@@ -304,6 +297,10 @@ wire  signed [14-1:0] asg_a    , asg_b    ;
 
 // configuration
 wire                  digital_loop;
+
+// Scan Module Specific Signals
+wire signed [14-1:0] scan_input_signal; // Signal routed TO the scan module
+wire                 scan_trigger_out;  // Trigger signal FROM the scan module
 
 ////////////////////////////////////////////////////////////////////////////////
 // PLL (clock and reaset)
@@ -389,7 +386,7 @@ ODDR oddr_dac_rst          (.Q(dac_rst_o), .D1(dac_rst  ), .D2(dac_rst  ), .C(da
 ODDR oddr_dac_dat [14-1:0] (.Q(dac_dat_o), .D1(dac_dat_b), .D2(dac_dat_a), .C(dac_clk_1x), .CE(1'b1), .R(dac_rst), .S(1'b0));
 
 //---------------------------------------------------------------------------------
-//  House Keeping
+//  House Keeping (Module 0)
 
 wire  [  8-1: 0] exp_p_in , exp_n_in ;
 wire  [  8-1: 0] exp_p_out, exp_n_out;
@@ -419,69 +416,22 @@ red_pitaya_hk i_hk (
   .sys_rdata       (  sys_rdata[ 0*32+31: 0*32]  ),  // read data
   .sys_err         (  sys_err[0]                 ),  // error indicator
   .sys_ack         (  sys_ack[0]                 ),   // acknowledge signal
-  .digital_pwm     (  dac_pwm_o                  )   // Digital PWM output
+  .digital_pwm     (  dac_pwm_o                  ),   // Digital PWM output
+  .trigger_output  (  scan_trigger_out           )
 );
 
 IOBUF i_iobufp [8-1:0] (.O(exp_p_in), .IO(exp_p_io), .I(exp_p_out), .T(~exp_p_dir) );
 IOBUF i_iobufn [8-1:0] (.O(exp_n_in), .IO(exp_n_io), .I(exp_n_out), .T(~exp_n_dir) );
 
-//---------------------------------------------------------------------------------
-//  This will become the scan ODMR lines application
-
-wire    [  2-1:0] trig_asg_out;
-wire              trig_scope_out;
-wire    [14-1: 0] to_scope_a;
-wire    [14-1: 0] to_scope_b;
-wire              dsp_trigger;
-
-
-// red_pitaya_scope i_scope (
-//   // ADC
-//   .adc_a_i         (  to_scope_a /*adc_a*/       ),  // CH 1
-//   .adc_b_i         (  to_scope_b /*adc_a*/       ),  // CH 2
-//   .adc_clk_i       (  adc_clk                    ),  // clock
-//   .adc_rstn_i      (  adc_rstn                   ),  // reset - active low
-//   .trig_ext_i      (  exp_p_in[0]                ),  // external trigger
-//   .trig_asg_i      (  trig_asg_out               ),  // ASG trigger
-//   .trig_dsp_i      (  dsp_trigger                ),
-//   .trig_scope_o    (  trig_scope_out             ),  // scope trigger to feed other instruments
-
-
-//   // AXI0 master                 // AXI1 master
-//   .axi0_clk_o    (axi0_clk   ),  .axi1_clk_o    (axi1_clk   ),
-//   .axi0_rstn_o   (axi0_rstn  ),  .axi1_rstn_o   (axi1_rstn  ),
-//   .axi0_waddr_o  (axi0_waddr ),  .axi1_waddr_o  (axi1_waddr ),
-//   .axi0_wdata_o  (axi0_wdata ),  .axi1_wdata_o  (axi1_wdata ),
-//   .axi0_wsel_o   (axi0_wsel  ),  .axi1_wsel_o   (axi1_wsel  ),
-//   .axi0_wvalid_o (axi0_wvalid),  .axi1_wvalid_o (axi1_wvalid),
-//   .axi0_wlen_o   (axi0_wlen  ),  .axi1_wlen_o   (axi1_wlen  ),
-//   .axi0_wfixed_o (axi0_wfixed),  .axi1_wfixed_o (axi1_wfixed),
-//   .axi0_werr_i   (axi0_werr  ),  .axi1_werr_i   (axi1_werr  ),
-//   .axi0_wrdy_i   (axi0_wrdy  ),  .axi1_wrdy_i   (axi1_wrdy  ),
-
-
-//   // System bus
-//   .sys_addr        (  sys_addr                   ),  // address
-//   .sys_wdata       (  sys_wdata                  ),  // write data
-//   .sys_sel         (  sys_sel                    ),  // write byte select
-//   .sys_wen         (  sys_wen[1]                 ),  // write enable
-//   .sys_ren         (  sys_ren[1]                 ),  // read enable
-//   .sys_rdata       (  sys_rdata[ 1*32+31: 1*32]  ),  // read data
-//   .sys_err         (  sys_err[1]                 ),  // error indicator
-//   .sys_ack         (  sys_ack[1]                 )   // acknowledge signal
-// );
-
-// //---------------------------------------------------------------------------------
-// //  Scan Module TODO: Make correct connections for scan module, possibly using sys_rdata[6*32:...] (adresses seem unused atm)
-
-// wire    [  2-1:0] trig_asg_out;
-// wire              trig_scope_out;
-// wire    [14-1: 0] to_scope_a;
-// wire    [14-1: 0] to_scope_b;
-// wire              dsp_trigger;
 
 //---------------------------------------------------------------------------------
-//  Oscilloscope application
+//  Oscilloscope application (Module 1)
+
+wire    [  2-1:0] trig_asg_out; // From ASG
+wire              trig_scope_out; // From Scope
+wire    [14-1: 0] to_scope_a; // From DSP
+wire    [14-1: 0] to_scope_b; // From DSP
+wire              dsp_trigger; // From DSP
 
 red_pitaya_scope i_scope (
   // ADC
@@ -520,7 +470,7 @@ red_pitaya_scope i_scope (
 );
 
 //---------------------------------------------------------------------------------
-//  DAC arbitrary signal generator
+//  DAC arbitrary signal generator (Module 2)
 wire    [14-1: 0] asg1phase_o;
 
 wire [PHASEBITS-1:0] iq0_phase;
@@ -565,7 +515,7 @@ red_pitaya_asg i_asg (
 );
 
 //---------------------------------------------------------------------------------
-//  DSP module
+//  DSP module (Module 3)
 
 red_pitaya_dsp i_dsp (
   // signals
@@ -682,7 +632,36 @@ generate
 endgenerate
 
 //---------------------------------------------------------------------------------
-//  Daisy chain
+// *** Scan Module Instantiation (Module 5) ***
+
+// For the future: Implement input selection via the DSP module. Not now, test other functionalities first.
+// For now, connecting adc_a as a placeholder, to see if the rest works
+assign scan_input_signal = adc_a;
+
+scan i_scan (
+    // System Clock and Reset
+    .clk                (adc_clk                    ),
+    .rstn               (adc_rstn                   ),
+
+    // Data Input
+    .input_i            (scan_input_signal          ), // Placeholder connection
+
+    // Trigger Output
+    .trigger_o          (scan_trigger_out           ),
+
+    // System Bus Interface
+    .sys_addr           (sys_addr                   ),
+    .sys_wdata          (sys_wdata                  ),
+    .sys_sel            (sys_sel                    ),
+    .sys_wen            (sys_wen[5]                 ),
+    .sys_ren            (sys_ren[5]                 ),
+    .sys_rdata          (sys_rdata[ 5*32+31: 5*32]  ),
+    .sys_err            (sys_err[5]                 ),
+    .sys_ack            (sys_ack[5]                 )
+);
+
+//---------------------------------------------------------------------------------
+//  Daisy chain (Disabled)
 //  simple communication module
 
 assign daisy_p_o = 1'bz;
