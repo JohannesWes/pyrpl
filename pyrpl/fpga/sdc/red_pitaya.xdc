@@ -14,7 +14,7 @@
 
 ### ADC
 
-# ADC A data
+# ADC A data. IOSTANDARD LVCMOS18: Voltage levels, IOB True: Use I/O flig-flops for better timing
 set_property IOSTANDARD LVCMOS18 [get_ports {adc_dat_a_i[*]}]
 set_property IOB        TRUE     [get_ports {adc_dat_a_i[*]}]
 #set_property PACKAGE_PIN V17     [get_ports {adc_dat_a_i[0]}]

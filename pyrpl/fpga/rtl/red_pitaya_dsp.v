@@ -43,7 +43,7 @@ The second half of this file defines the different submodules. For custom submod
 a good point to start is red_pitaya_pid_block.v. 
 
 Submodule i is assigned the address space
-0x40300000 + i*0x10000 + (0x0000 to 0xFFFF), that is 2**16 bytes.
+0x4030_0000 + i*0x10000 + (0x0000 to 0xFFFF), that is 2**16 bytes.
 
 Addresses 0x403z00zz where z is an arbitrary hex character are reserved to manage 
 the input/output routing of the submodule and are not forwarded, and therefore 

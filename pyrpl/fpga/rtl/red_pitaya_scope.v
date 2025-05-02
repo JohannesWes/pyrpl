@@ -349,7 +349,7 @@ always @(posedge adc_clk_i) begin
    end
 end
 
-// Read
+// Read - adc_rd_dv becomes true 3 cycles after sys_ren is asserted by AXI master -> compensates for delay from read logic buffering in next code block
 always @(posedge adc_clk_i) begin
    if (adc_rstn_i == 1'b0)
       adc_rval <= 4'h0 ;
@@ -359,7 +359,7 @@ end
 assign adc_rd_dv = adc_rval[3];
 
 always @(posedge adc_clk_i) begin
-   adc_raddr   <= sys_addr[RSZ+1:2] ; // address synchronous to clock
+   adc_raddr   <= sys_addr[RSZ+1:2] ; // address synchronous to clock. Starting at 2 to convert the byte address provided by AXI bus into word address for RAM indexing
    adc_a_raddr <= adc_raddr     ; // double register 
    adc_b_raddr <= adc_raddr     ; // otherwise memory corruption at reading
    adc_a_rd    <= adc_a_buf[adc_a_raddr] ;
