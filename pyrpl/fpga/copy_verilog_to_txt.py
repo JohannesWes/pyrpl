@@ -23,7 +23,7 @@ def convert_files_to_txt(source_folder, destination_folder):
 
             # Construct the new filename with a .txt extension
             base_name, _ = os.path.splitext(filename)  # Split filename and extension
-            new_filename = base_name + ".txt"
+            new_filename = base_name + ".v.txt"
 
             # Construct the full destination file path
             destination_file_path = os.path.join(destination_folder, new_filename)
