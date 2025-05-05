@@ -114,11 +114,18 @@ localparam RSZ = 14 ;  // RAM size 2^RSZ
 reg   [RSZ+15: 0] set_a_size   , set_b_size   ;
 reg   [RSZ+15: 0] set_a_step   , set_b_step   ;
 reg   [RSZ+15: 0] set_a_step_mod, set_b_step_mod ;
-reg   signed  [63:0]      delta_step_a , delta_step_b ;
 
-reg   [32-1:0]    f_dev_max_kHz_a;
-reg   [32-1:0]    f_dev_max_kHz_b;
+reg   signed  [63:0]      delta_step_a , delta_step_a_reg;
+reg   signed  [63:0]      delta_step_b , delta_step_b_reg;
+
+reg   [32-1:0]    f_dev_max_kHz_a, f_dev_max_kHz_a_reg;
+reg   [32-1:0]    f_dev_max_kHz_b, f_dev_max_kHz_b_reg;
+
 reg               fm_a_enable  , fm_b_enable;
+
+reg signed [LUTBITS-1:0] iq0_sin_reg;
+reg signed [LUTBITS-1:0] iq1_sin_reg;
+reg signed [LUTBITS-1:0] iq2_sin_reg;
 
 
 // we need delta_step = (f_dev_max / f_clk) * 2^(14+16) * (iq0_sin / iq0_sin_max) = (f_dev_max / f_clk) * 2^(RSZ+16) * (iq0_sin / 2^(16))
@@ -206,7 +213,7 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [1:0] (
   .buf_rpnt_o      ({buf_b_rpnt       , buf_a_rpnt       }),  // buffer current read pointer
   // configuration
   .set_size_i      ({set_b_size       , set_a_size       }),  // set table data size
-  .set_step_i      ({set_b_step_mod   , set_a_step_mod   }),  // set pointer step
+  .set_step_i      ({set_a_step_mod   , set_a_step_mod   }),  // set pointer step FIXME: currently using same step size for both for testing IQ-mixing
   .set_ofs_i       ({set_b_ofs        , set_a_ofs        }),  // set reset offset
   .set_rst_i       ({set_b_rst        , set_a_rst        }),  // set FMS to reset
   .set_once_i      ({set_b_once       , set_a_once       }),  // set only once
@@ -317,8 +324,16 @@ if (dac_rstn_i == 1'b0) begin
 
 end else begin
 
-   delta_step_a <= ($signed(iq0_sin) * SCALING_FACTOR * $signed(f_dev_max_kHz_a)) >>> 16;
-   delta_step_b <= ($signed(iq0_sin) * SCALING_FACTOR * $signed(f_dev_max_kHz_b)) >>> 16;
+   iq0_sin_reg          <= iq0_sin;
+   f_dev_max_kHz_a_reg  <= f_dev_max_kHz_a;
+   f_dev_max_kHz_b_reg  <= f_dev_max_kHz_b;
+
+   // registers for pipelining
+   delta_step_a_reg <= $signed(iq0_sin_reg) * SCALING_FACTOR * $signed(f_dev_max_kHz_a_reg);
+   delta_step_b_reg <= $signed(iq0_sin_reg) * SCALING_FACTOR * $signed(f_dev_max_kHz_b_reg);
+
+   delta_step_a     <= delta_step_a_reg >>> 16;
+   delta_step_b     <= delta_step_b_reg >>> 16;
 
    set_a_step_mod <= $signed(set_a_step) + (fm_a_enable ? delta_step_a[RSZ+15:0] : {RSZ+16{1'b0}});
    set_b_step_mod <= $signed(set_b_step) + (fm_b_enable ? delta_step_b[RSZ+15:0] : {RSZ+16{1'b0}});
