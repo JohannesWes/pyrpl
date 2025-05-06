@@ -113,30 +113,11 @@ localparam RSZ = 14 ;  // RAM size 2^RSZ
 
 reg   [RSZ+15: 0] set_a_size   , set_b_size   ;
 reg   [RSZ+15: 0] set_a_step   , set_b_step   ;
-reg   [RSZ+15: 0] set_a_step_mod, set_b_step_mod ;
-
-reg   signed  [63:0]      delta_step_a , delta_step_a_reg;
-reg   signed  [63:0]      delta_step_b , delta_step_b_reg;
-
-reg   [32-1:0]    f_dev_max_kHz_a, f_dev_max_kHz_a_reg;
-reg   [32-1:0]    f_dev_max_kHz_b, f_dev_max_kHz_b_reg;
-
-reg               fm_a_enable  , fm_b_enable;
 
 reg signed [LUTBITS-1:0] iq0_sin_reg;
 reg signed [LUTBITS-1:0] iq1_sin_reg;
 reg signed [LUTBITS-1:0] iq2_sin_reg;
 
-
-// we need delta_step = (f_dev_max / f_clk) * 2^(14+16) * (iq0_sin / iq0_sin_max) = (f_dev_max / f_clk) * 2^(RSZ+16) * (iq0_sin / 2^(16))
-// = f_dev_max_kHz * 1e3 * 2^(RSZ) / f_clk * iq0_sin ~ f_dev_max_kHz * 8590 * 2^(-16) * iq0_sin
-// as such, I should multiply by 8590 and right shift by 16 bits
-localparam SCALING_FACTOR = 8590;
-
-
-wire signed  [RSZ+15: 0] phase_a_mod,    phase_b_mod    ;
-// assign  phase_a_mod = ...;
-// assign  phase_b_mod = ...;
 reg   [RSZ+15: 0] set_a_ofs    , set_b_ofs    ;
 reg               set_a_rst    , set_b_rst    ;
 reg               set_a_once   , set_b_once   ;
@@ -213,7 +194,7 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [1:0] (
   .buf_rpnt_o      ({buf_b_rpnt       , buf_a_rpnt       }),  // buffer current read pointer
   // configuration
   .set_size_i      ({set_b_size       , set_a_size       }),  // set table data size
-  .set_step_i      ({set_a_step_mod   , set_a_step_mod   }),  // set pointer step FIXME: currently using same step size for both for testing IQ-mixing
+  .set_step_i      ({set_b_step       , set_a_step       }),  // set pointer step
   .set_ofs_i       ({set_b_ofs        , set_a_ofs        }),  // set reset offset
   .set_rst_i       ({set_b_rst        , set_a_rst        }),  // set FMS to reset
   .set_once_i      ({set_b_once       , set_a_once       }),  // set only once
@@ -278,10 +259,6 @@ if (dac_rstn_i == 1'b0) begin
    set_a_size  <= {RSZ+16{1'b1}} ;
    set_a_ofs   <= {RSZ+16{1'b0}} ;
    set_a_step  <={{RSZ+15{1'b0}},1'b0} ;
-   set_a_step_mod <= {{RSZ+15{1'b0}},1'b0} ;
-   f_dev_max_kHz_a<=32'h0  ;
-   fm_a_enable <= 1'b0     ; 
-   delta_step_a<= 64'b0    ;
    set_a_ncyc  <= 32'h0    ;
    set_a_rnum  <= 16'h0    ;
    set_a_rdly  <= 32'h0    ;
@@ -297,10 +274,6 @@ if (dac_rstn_i == 1'b0) begin
    set_b_size  <= {RSZ+16{1'b1}} ;
    set_b_ofs   <= {RSZ+16{1'b0}} ;
    set_b_step  <={{RSZ+15{1'b0}},1'b0} ;
-   set_b_step_mod <= {{RSZ+15{1'b0}},1'b0} ;
-   f_dev_max_kHz_a<=32'h0;
-   fm_b_enable <= 1'b0     ;
-   delta_step_b<= 64'b0    ;
    set_b_ncyc  <= 32'h0    ;
    set_b_rnum  <= 16'h0    ;
    set_b_rdly  <= 32'h0    ;
@@ -325,18 +298,6 @@ if (dac_rstn_i == 1'b0) begin
 end else begin
 
    iq0_sin_reg          <= iq0_sin;
-   f_dev_max_kHz_a_reg  <= f_dev_max_kHz_a;
-   f_dev_max_kHz_b_reg  <= f_dev_max_kHz_b;
-
-   // registers for pipelining
-   delta_step_a_reg <= $signed(iq0_sin_reg) * SCALING_FACTOR * $signed(f_dev_max_kHz_a_reg);
-   delta_step_b_reg <= $signed(iq0_sin_reg) * SCALING_FACTOR * $signed(f_dev_max_kHz_b_reg);
-
-   delta_step_a     <= delta_step_a_reg >>> 16;
-   delta_step_b     <= delta_step_b_reg >>> 16;
-
-   set_a_step_mod <= $signed(set_a_step) + (fm_a_enable ? delta_step_a[RSZ+15:0] : {RSZ+16{1'b0}});
-   set_b_step_mod <= $signed(set_b_step) + (fm_b_enable ? delta_step_b[RSZ+15:0] : {RSZ+16{1'b0}});
 
    // Set trigger sources
    trig_a_sw  <= sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[0]  ;
@@ -362,8 +323,6 @@ end else begin
       if (sys_addr[19:0]==20'h18)  set_a_ncyc <= sys_wdata[  32-1: 0] ;
       if (sys_addr[19:0]==20'h1C)  set_a_rnum <= sys_wdata[  16-1: 0] ;
       if (sys_addr[19:0]==20'h20)  set_a_rdly <= sys_wdata[  32-1: 0] ;
-      if (sys_addr[19:0]==20'h44)  f_dev_max_kHz_a <= sys_wdata[32-1:0];
-      if (sys_addr[19:0]==20'h48)  fm_a_enable<= sys_wdata[0]         ;
 
       if (sys_addr[19:0]==20'h24)  set_b_amp  <= sys_wdata[  0+13: 0] ;
       if (sys_addr[19:0]==20'h24)  set_b_dc   <= sys_wdata[ 16+13:16] ;
@@ -373,8 +332,6 @@ end else begin
       if (sys_addr[19:0]==20'h38)  set_b_ncyc <= sys_wdata[  32-1: 0] ;
       if (sys_addr[19:0]==20'h3C)  set_b_rnum <= sys_wdata[  16-1: 0] ;
       if (sys_addr[19:0]==20'h40)  set_b_rdly <= sys_wdata[  32-1: 0] ;
-      if (sys_addr[19:0]==20'h64)  f_dev_max_kHz_b <= sys_wdata[32-1:0];
-      if (sys_addr[19:0]==20'h68)  fm_b_enable<= sys_wdata[0]         ;
 
       if (sys_addr[19:0]==20'h118)  at_counts_a[32-1:0]  <= sys_wdata[32-1: 0] ;
       if (sys_addr[19:0]==20'h11C)  at_counts_a[64-1:32] <= sys_wdata[32-1: 0] ;
@@ -421,8 +378,6 @@ end else begin
      20'h00018 : begin sys_ack <= sys_en;          sys_rdata <= set_a_ncyc                         ; end
      20'h0001C : begin sys_ack <= sys_en;          sys_rdata <= {{32-16{1'b0}},set_a_rnum}         ; end
      20'h00020 : begin sys_ack <= sys_en;          sys_rdata <= set_a_rdly                         ; end
-     20'h00044 : begin sys_ack <= sys_en;          sys_rdata <= f_dev_max_kHz_a                    ; end
-     20'h00048 : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, fm_a_enable}               ; end
 
      20'h00024 : begin sys_ack <= sys_en;          sys_rdata <= {2'h0, set_b_dc, 2'h0, set_b_amp}  ; end
      20'h00028 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-16{1'b0}},set_b_size}     ; end
@@ -432,8 +387,6 @@ end else begin
      20'h00038 : begin sys_ack <= sys_en;          sys_rdata <= set_b_ncyc                         ; end
      20'h0003C : begin sys_ack <= sys_en;          sys_rdata <= {{32-16{1'b0}},set_b_rnum}         ; end
      20'h00040 : begin sys_ack <= sys_en;          sys_rdata <= set_b_rdly                         ; end
-     20'h00064 : begin sys_ack <= sys_en;          sys_rdata <= f_dev_max_kHz_b                    ; end
-     20'h00068 : begin sys_ack <= sys_en;          sys_rdata <= {31'h0, fm_b_enable}               ; end
 
      20'h00114 : begin sys_ack <= sys_en;          sys_rdata <= {{32-RSZ-2{1'b0}},trigbuf_rp_a}    ; end
      20'h00118 : begin sys_ack <= sys_en;          sys_rdata <= at_counts_a[32-1:0]     ; end
