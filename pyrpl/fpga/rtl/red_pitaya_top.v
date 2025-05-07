@@ -82,7 +82,9 @@
 
 module red_pitaya_top #(
   parameter PHASEBITS = 32,
-  parameter LUTBITS   = 17
+  parameter LUTBITS   = 17,
+  parameter FGEN3_PHASEBITS = 32,
+  parameter FGEN3_FM_MOD_BITS   = 17
 )(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
@@ -256,10 +258,6 @@ assign sys_rdata[5*32+:32] = 32'h0;
 assign sys_err  [5       ] =  1'b0;
 assign sys_ack  [5       ] =  1'b1;
 
-assign sys_rdata[6*32+:32] = 32'h0; 
-assign sys_err  [6       ] =  1'b0;
-assign sys_ack  [6       ] =  1'b1;
-
 assign sys_rdata[7*32+:32] = 32'h0; 
 assign sys_err  [7       ] =  1'b0;
 assign sys_ack  [7       ] =  1'b1;
@@ -300,7 +298,15 @@ reg          [14-1:0] dac_dat_a, dac_dat_b;
 wire         [14-1:0] dac_a    , dac_b    ;
 
 // ASG
-wire  signed [14-1:0] asg_a    , asg_b    ;
+wire  signed [14-1:0] asg_a_output    , asg_b_output    ;
+
+wire  signed [14-1:0] fgen3_dac_a;
+wire  signed [14-1:0] fgen3_dac_b;
+wire                  fgen3_output_to_dsp_enable;
+
+// Signals to DSP
+wire  signed [14-1:0] dsp_asg1_input;
+wire  signed [14-1:0] dsp_asg2_input;
 
 // configuration
 wire                  digital_loop;
@@ -534,8 +540,8 @@ wire signed [LUTBITS-1:0] iq2_sin;
 
 red_pitaya_asg i_asg (
    // DAC
-  .dac_a_o         (  asg_a                      ),  // CH 1
-  .dac_b_o         (  asg_b                      ),  // CH 2
+  .dac_a_o         (  asg_a_output               ),  // CH 1
+  .dac_b_o         (  asg_b_output               ),  // CH 2
   .dac_clk_i       (  adc_clk                    ),  // clock
   .dac_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_a_i        (  exp_p_in[0]                ),
@@ -576,8 +582,8 @@ red_pitaya_dsp i_dsp (
   .dat_a_o         (  dac_a                      ),  // out 1
   .dat_b_o         (  dac_b                      ),  // out 2
   
-  .asg1_i          (  asg_a                      ),
-  .asg2_i          (  asg_b                      ),
+  .asg1_i          (  dsp_asg1_input             ),
+  .asg2_i          (  dsp_asg2_input             ),
   .scope1_o        (  to_scope_a                 ),
   .scope2_o        (  to_scope_b                 ),
   .asg1phase_i     (  asg1phase_o                ),
@@ -633,6 +639,8 @@ assign pwm_freq_div[1] = pwm_freq_div_1;
 assign pwm_freq_div[2] = pwm_freq_div_2;
 assign pwm_freq_div[3] = pwm_freq_div_3;
 
+wire  [ 14-1: 0] pwm_signals[4-1:0];
+
 red_pitaya_ams i_ams (
    // power test
   .clk_i           (  adc_clk                    ),  // clock
@@ -660,9 +668,6 @@ red_pitaya_ams i_ams (
   .sys_ack         (  sys_ack[4]                 )   // acknowledge signal
 );
 
-
-wire  [ 14-1: 0] pwm_signals[4-1:0];
-
 genvar i;
 generate
     for (i = 0; i < 4; i = i + 1) begin : pwm_gen_inst
@@ -680,6 +685,40 @@ generate
         );
     end
 endgenerate
+
+//---------------------------------------------------------------------------------
+//  3FGEN module
+
+red_pitaya_3fgen #(
+    .PHASEBITS    (FGEN3_PHASEBITS),   // Or directly PHASEBITS if they are intended to be the same
+    .FM_MOD_BITS  (FGEN3_FM_MOD_BITS)  // Corresponds to LUTBITS of iq_fgen
+) i_3fgen (
+    .clk_i        (adc_clk),
+    .rstn_i       (adc_rstn),
+    .dac_a_o      (fgen3_dac_a),
+    .dac_b_o      (fgen3_dac_b),
+    .output_to_dsp_enable_o (fgen3_output_to_dsp_enable),
+    .fm_mod_in    (iq0_sin), // Modulating signal from IQ0
+
+    .sys_addr     (sys_addr),
+    .sys_wdata    (sys_wdata),
+    .sys_sel      (sys_sel),
+    .sys_wen      (sys_wen[6]),  // System bus enable for module 6
+    .sys_ren      (sys_ren[6]),  // System bus enable for module 6
+    .sys_rdata    (sys_rdata[6*32+31 : 6*32]),
+    .sys_err      (sys_err[6]),
+    .sys_ack      (sys_ack[6])
+);
+
+// Mux for DSP ASG inputs
+
+
+// assign dsp_asg1_input = fgen3_dac_a;
+// assign dsp_asg2_input = fgen3_dac_b; 
+assign dsp_asg1_input = fgen3_output_to_dsp_enable ? fgen3_dac_a : asg_a_output;
+assign dsp_asg2_input = fgen3_output_to_dsp_enable ? fgen3_dac_b : asg_b_output;
+
+
 
 //---------------------------------------------------------------------------------
 //  Daisy chain

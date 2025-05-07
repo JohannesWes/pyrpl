@@ -6,15 +6,18 @@ member ModuleClass._widget_class specifies which ModuleWidget class should
 be used for the particular ModuleClass.
 """
 
+# widgets\module_widgets\__init__.py
+
 from .base_module_widget import ReducedModuleWidget, ModuleWidget
 from .asg_widget import AsgWidget
+from .fgen3_widget import Fgen3Widget
 from .iir_widget import IirWidget
 from .iq_widget import IqWidget
 from .pwm_widget import PwmWidget
 from .lockbox_widget import LockboxWidget, OutputSignalWidget, InputsWidget, \
                             LockboxInputWidget, LockboxSequenceWidget, LockboxStageWidget, StageOutputWidget
 from .module_manager_widget import ModuleManagerWidget, IqManagerWidget, PidManagerWidget, ScopeManagerWidget, \
-                                    IirManagerWidget, AsgManagerWidget, PwmManagerWidget
+                                    IirManagerWidget, AsgManagerWidget, Fgen3ManagerWidget, PwmManagerWidget
 from .na_widget import NaWidget
 from .pid_widget import PidWidget
 from .scope_widget import ScopeWidget

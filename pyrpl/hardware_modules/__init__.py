@@ -19,6 +19,8 @@
 """ All modules are extensively discussed in the Tutorial. Please refer to
 there for more information. """
 
+# hardware_modules\__init__.py
+
 
 from .dsp import DspModule, DSP_INPUTS, all_inputs, all_output_directs, \
     dsp_addr_base, InputSelectProperty, InputSelectRegister
@@ -26,6 +28,7 @@ from .filter import FilterModule
 from .hk import HK
 from .scope import Scope
 from .asg import Asg0, Asg1
+from .fgen3 import Fgen3
 # from .pid import Pid
 from .sampler import Sampler
 from .pwm import Pwm

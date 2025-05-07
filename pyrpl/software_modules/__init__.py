@@ -10,6 +10,7 @@ from .software_pid import *
 from .module_managers import *
 from ..pyrpl_utils import all_subclasses
 
+# software_modules\__init__.py
 
 class ModuleNotFound(ValueError):
     pass

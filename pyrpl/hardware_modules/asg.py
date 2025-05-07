@@ -74,16 +74,6 @@ class WaveformAttribute(SelectProperty):
                 y[len(y)//2:] = -1.0
             elif waveform == 'dc':
                 y = np.zeros(instance.data_length)
-            elif waveform == 'square_fm':
-                y = np.load('signal_square_fm.npy')
-            elif waveform == 'sine_fm_i_quad':
-                y = np.load('signal_fm_I_quad.npy')
-            elif waveform == 'sine_fm_q_quad':
-                y = np.load('signal_fm_Q_quad.npy')
-            elif waveform == 'sin_fivek_rep':
-                y = np.load('signal_sin_fc.npy')
-            elif waveform == 'cos_fivek_rep':
-                y = np.load('signal_cos_fc.npy')
             else:
                 y = instance.data
                 instance._logger.error(
@@ -321,8 +311,8 @@ def make_asg(channel=0):
         def _noise_V2_per_Hz(self):
             return self._rmsamplitude**2/(125e6*self._frequency_correction/2)
 
-        waveforms = [waveform.lower() for waveform in
-                     ['sin', 'cos', 'ramp', 'halframp', 'square', 'dc', 'noise', 'sine_fm_I_quad', 'sine_fm_Q_quad', 'sin_fivek_rep', 'cos_fivek_rep']]
+        waveforms = ['sin', 'cos', 'ramp', 'halframp', 'square', 'dc',
+                     'noise']
 
         waveform = WaveformAttribute(waveforms)
 
