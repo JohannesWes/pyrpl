@@ -68,12 +68,12 @@ class Fgen3(HardwareModule, SignalModule):
                                    doc="Base frequency for component 0 [Hz].")
     phase_offset_a0 = PhaseRegister(_comp0_addr_base + 0x04, bits=_PHASEBITS_PY,
                                   doc="Phase offset for component 0 contribution to DAC A [degrees].")
-    amplitude_a0 = FloatRegister(_comp0_addr_base + 0x08, bits=_GAINBITS_PY, norm=2**_GAINBITS_PY - 1, signed=False,
+    amplitude_a0 = FloatRegister(_comp0_addr_base + 0x08, bits=_GAINBITS_PY, norm=2.0**(_GAINBITS_PY - 1), signed=False,
                               min=0.0, max=1.0,
                               doc="Amplitude for component 0 contribution to DAC A (0.0 to 1.0).")
     phase_offset_b0 = PhaseRegister(_comp0_addr_base + 0x0C, bits=_PHASEBITS_PY,
                                   doc="Phase offset for component 0 contribution to DAC B [degrees].")
-    amplitude_b0 = FloatRegister(_comp0_addr_base + 0x10, bits=_GAINBITS_PY, norm=2**_GAINBITS_PY - 1, signed=False,
+    amplitude_b0 = FloatRegister(_comp0_addr_base + 0x10, bits=_GAINBITS_PY, norm=2.0**(_GAINBITS_PY - 1), signed=False,
                               min=0.0, max=1.0,
                               doc="Amplitude for component 0 contribution to DAC B (0.0 to 1.0).")
     fm_enable0 = BoolRegister(_comp0_addr_base + 0x14, bit=0,
@@ -87,12 +87,12 @@ class Fgen3(HardwareModule, SignalModule):
                                    doc="Base frequency for component 1 [Hz].")
     phase_offset_a1 = PhaseRegister(_comp1_addr_base + 0x04, bits=_PHASEBITS_PY,
                                   doc="Phase offset for component 1 contribution to DAC A [degrees].")
-    amplitude_a1 = FloatRegister(_comp1_addr_base + 0x08, bits=_GAINBITS_PY, norm=2**_GAINBITS_PY - 1, signed=False,
+    amplitude_a1 = FloatRegister(_comp1_addr_base + 0x08, bits=_GAINBITS_PY, norm=2.0**(_GAINBITS_PY - 1), signed=False,
                               min=0.0, max=1.0,
                               doc="Amplitude for component 1 contribution to DAC A (0.0 to 1.0).")
     phase_offset_b1 = PhaseRegister(_comp1_addr_base + 0x0C, bits=_PHASEBITS_PY,
                                   doc="Phase offset for component 1 contribution to DAC B [degrees].")
-    amplitude_b1 = FloatRegister(_comp1_addr_base + 0x10, bits=_GAINBITS_PY, norm=2**_GAINBITS_PY - 1, signed=False,
+    amplitude_b1 = FloatRegister(_comp1_addr_base + 0x10, bits=_GAINBITS_PY, norm=2.0**(_GAINBITS_PY - 1), signed=False,
                               min=0.0, max=1.0,
                               doc="Amplitude for component 1 contribution to DAC B (0.0 to 1.0).")
     fm_enable1 = BoolRegister(_comp1_addr_base + 0x14, bit=0,
@@ -106,12 +106,12 @@ class Fgen3(HardwareModule, SignalModule):
                                    doc="Base frequency for component 2 [Hz].")
     phase_offset_a2 = PhaseRegister(_comp2_addr_base + 0x04, bits=_PHASEBITS_PY,
                                   doc="Phase offset for component 2 contribution to DAC A [degrees].")
-    amplitude_a2 = FloatRegister(_comp2_addr_base + 0x08, bits=_GAINBITS_PY, norm=2**_GAINBITS_PY - 1, signed=False,
+    amplitude_a2 = FloatRegister(_comp2_addr_base + 0x08, bits=_GAINBITS_PY, norm=2.0**(_GAINBITS_PY - 1), signed=False,
                               min=0.0, max=1.0,
                               doc="Amplitude for component 2 contribution to DAC A (0.0 to 1.0).")
     phase_offset_b2 = PhaseRegister(_comp2_addr_base + 0x0C, bits=_PHASEBITS_PY,
                                   doc="Phase offset for component 2 contribution to DAC B [degrees].")
-    amplitude_b2 = FloatRegister(_comp2_addr_base + 0x10, bits=_GAINBITS_PY, norm=2**_GAINBITS_PY - 1, signed=False,
+    amplitude_b2 = FloatRegister(_comp2_addr_base + 0x10, bits=_GAINBITS_PY, norm=2.0**(_GAINBITS_PY - 1), signed=False,
                               min=0.0, max=1.0,
                               doc="Amplitude for component 2 contribution to DAC B (0.0 to 1.0).")
     fm_enable2 = BoolRegister(_comp2_addr_base + 0x14, bit=0,
