@@ -77,6 +77,7 @@ module red_pitaya_3fgen #(
     reg [GAINBITS-1:0]  comp_amplitude_a    [NUM_COMPONENTS-1:0];
     reg [PHASEBITS-1:0] comp_phase_offset_b [NUM_COMPONENTS-1:0];
     reg [GAINBITS-1:0]  comp_amplitude_b    [NUM_COMPONENTS-1:0];
+    reg                 comp_enable         [NUM_COMPONENTS-1:0];
 
     reg                 fm_enable           [NUM_COMPONENTS-1:0];
     reg [31:0]          fm_deviation_kHz    [NUM_COMPONENTS-1:0];
@@ -146,6 +147,7 @@ module red_pitaya_3fgen #(
                 comp_amplitude_b[k_idx]    <= {GAINBITS{1'b0}};
                 fm_enable[k_idx]           <= 1'b0;
                 fm_deviation_kHz[k_idx]    <= 32'd0;
+                comp_enable[k_idx]         <= 1'b1;
             end
             sys_ack <= 1'b0;
             sys_err <= 1'b0;
@@ -170,6 +172,7 @@ module red_pitaya_3fgen #(
                     16'h0020: comp_amplitude_b[0]    <= sys_wdata[GAINBITS-1:0];
                     16'h0024: fm_enable[0]           <= sys_wdata[0];
                     16'h0028: fm_deviation_kHz[0]    <= sys_wdata;
+                    16'h002C: comp_enable[0]         <= sys_wdata[0];
 
                     // Component 1
                     16'h0040: comp_freq_step[1]      <= sys_wdata[PHASEBITS-1:0];
@@ -179,6 +182,7 @@ module red_pitaya_3fgen #(
                     16'h0050: comp_amplitude_b[1]    <= sys_wdata[GAINBITS-1:0];
                     16'h0054: fm_enable[1]           <= sys_wdata[0];
                     16'h0058: fm_deviation_kHz[1]    <= sys_wdata;
+                    16'h005C: comp_enable[1]         <= sys_wdata[0];
 
                     // Component 2
                     16'h0070: comp_freq_step[2]      <= sys_wdata[PHASEBITS-1:0];
@@ -188,6 +192,7 @@ module red_pitaya_3fgen #(
                     16'h0080: comp_amplitude_b[2]    <= sys_wdata[GAINBITS-1:0];
                     16'h0084: fm_enable[2]           <= sys_wdata[0];
                     16'h0088: fm_deviation_kHz[2]    <= sys_wdata;
+                    16'h008C: comp_enable[2]         <= sys_wdata[0];
 
                     default: sys_ack <= 1'b0;
                 endcase
@@ -207,6 +212,7 @@ module red_pitaya_3fgen #(
                     16'h0020: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_b[0]};
                     16'h0024: sys_rdata <= {31'b0, fm_enable[0]};
                     16'h0028: sys_rdata <= fm_deviation_kHz[0];
+                    16'h002C: sys_rdata <= {31'b0, comp_enable[0]};
 
                     // Component 1
                     16'h0040: sys_rdata <= comp_freq_step[1];
@@ -216,7 +222,8 @@ module red_pitaya_3fgen #(
                     16'h0050: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_b[1]};
                     16'h0054: sys_rdata <= {31'b0, fm_enable[1]};
                     16'h0058: sys_rdata <= fm_deviation_kHz[1];
-
+                    16'h005C: sys_rdata <= {31'b0, comp_enable[1]};
+                    
                     // Component 2
                     16'h0070: sys_rdata <= comp_freq_step[2];
                     16'h0074: sys_rdata <= comp_phase_offset_a[2];
@@ -225,6 +232,7 @@ module red_pitaya_3fgen #(
                     16'h0080: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_b[2]};
                     16'h0084: sys_rdata <= {31'b0, fm_enable[2]};
                     16'h0088: sys_rdata <= fm_deviation_kHz[2];
+                    16'h008C: sys_rdata <= {31'b0, comp_enable[2]};
 
                     // Read-only parameters
                     16'hFF00: sys_rdata <= PHASEBITS;
@@ -316,8 +324,14 @@ module red_pitaya_3fgen #(
                     prod_a[i] <= $signed(lut_sine_a[i]) * $signed(comp_amplitude_a[i]);
                     prod_b[i] <= $signed(lut_sine_b[i]) * $signed(comp_amplitude_b[i]);
 
-                    scaled_shifted_a[i] <= $signed(prod_a[i]) >>> 13; // Scale factor, 2^13 = 8192
-                    scaled_shifted_b[i] <= $signed(prod_b[i]) >>> 13; // Ensure this scaling is appropriate
+                    // If component is enabled, scale and shift. Otherwise, output zero for this component.
+                    if (comp_enable[i]) begin
+                        scaled_shifted_a[i] <= $signed(prod_a[i]) >>> 13; // Scale factor, 2^13 = 8192
+                        scaled_shifted_b[i] <= $signed(prod_b[i]) >>> 13; // Ensure this scaling is appropriate
+                    end else begin
+                        scaled_shifted_a[i] <= {SCALED_SUM_COMPONENT_BITS{1'b0}};
+                        scaled_shifted_b[i] <= {SCALED_SUM_COMPONENT_BITS{1'b0}};
+                    end
                 end
             end
         end // component_gen_block
