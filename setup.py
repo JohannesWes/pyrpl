@@ -1,169 +1,264 @@
-# note to the developer
-# do not forget to make source distribution with
-# python setup.py sdist
+#!/usr/bin/env python3
+"""
+Modern setup.py for pyrpl package
+"""
 
-# much of the code here is from
-# https://jeffknupp.com/blog/2013/08/16/open-sourcing-a-python-project-the-right-way/
-
-#! /usr/bin/env python
-from __future__ import print_function
-from setuptools import setup, find_packages
-from setuptools.command.test import test as TestCommand
-from distutils.core import setup
-import io
-import codecs
 import os
 import sys
+import subprocess
+from pathlib import Path
+from setuptools import setup, find_packages
+from setuptools.command.build_py import build_py
+from setuptools.command.develop import develop
 
-# path to the directory that contains the setup.py script
-SETUP_PATH = os.path.dirname(os.path.abspath(__file__))
+# Get the directory containing this setup.py file
+SETUP_DIR = Path(__file__).parent.absolute()
 
-def read(fname):
-    return open(os.path.join(SETUP_PATH, fname)).read()
 
-# Version info -- read without importing
-_locals = {}
-exec(read(os.path.join('pyrpl', '_version.py')), None, _locals)
-version = _locals['__version__']
-
-# # read requirements
-# # from http://stackoverflow.com/questions/14399534/how-can-i-reference-requirements-txt-for-the-install-requires-kwarg-in-setuptool
-# requirements = []
-# here = os.path.abspath(os.path.dirname(__file__))
-# with open(os.path.join(here, 'readthedocs_requirements.txt')) as f:
-#     lines = f.readlines()
-#     for line in lines:
-#         line = line.strip()
-#         if '#' not in line and line:
-#             requirements.append(line.strip())
-requirements = ['scp',
-                #'matplotlib', # optional requirementm, not needed for core
-                'scipy',
-                'pyyaml',
-                #'ruamel.yaml' # temporarily disabled
-                'pandas',
-                'pyqtgraph',
-                'numpy>=1.9',
-                'paramiko>=2.0',
-                'nose>=1.0',
-                # 'PyQt5<=5.14',  # cannot be installed with pip, if in conda you can use conda install pyqt<5.15
-                'qtpy<=1.10',  # qtpy 1.11 contains breaking API changes related to pyqtSignals
-                'nbconvert',
-                'jupyter-client']
-
-if sys.version_info >= (3,4):  # python version dependencies
-    requirements += ['qasync']
-else:  # python 2.7
-    requirements += ['futures', 'mock']  # mock is now a full dependency
-if os.environ.get('TRAVIS') == 'true':
-    requirements += ['pandoc']
-if os.environ.get('READTHEDOCS') == 'True':
-    requirements += ['pandoc', 'sphinx', 'sphinx_bootstrap_theme']  # mock is needed on readthedocs.io to mock PyQt5
-    # remove a few of the mocked modules
-    def rtd_included(r):
-        for rr in ['numpy', 'scipy', 'pandas', 'scp', 'paramiko', 'pytest',
-                   'qasync', 'qtpy', 'asyncio', 'pyqtgraph']:
-            if r.startswith(rr):
-                return False
-        return True
-    requirements = [r for r in requirements if rtd_included(r)]
-
-# cannot install pyQt4 with pip:
-# http://stackoverflow.com/questions/4628519/is-it-possible-to-require-pyqt-from-setuptools-setup-py
-# PyQt4
-try:
-    long_description = read('README.rst')
-except:
+def read_file(filename):
+    """Read a file and return its contents."""
+    filepath = SETUP_DIR / filename
     try:
-        import pypandoc
-        long_description = pypandoc.convert_file('README.md', 'rst')
-    except:
-        long_description = read('README.md')
-
-def find_packages():
-    """
-    Simple function to find all modules under the current folder.
-    """
-    modules = []
-    for dirpath, _, filenames in os.walk(os.path.join(SETUP_PATH, "pyrpl")):
-        if "__init__.py" in filenames:
-            modules.append(os.path.relpath(dirpath, SETUP_PATH))
-    return [module.replace(os.sep, ".") for module in modules]
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        return ''
 
 
-class PyTest(TestCommand):
-    # user_options = [('pytest-args=', 'a', "192.168.1.100")] #not yet working
-    def finalize_options(self):
-        TestCommand.finalize_options(self)
-        self.test_args = []
-        self.test_suite = True
+def get_version():
+    """Get version from _version.py file."""
+    version_file = SETUP_DIR / 'pyrpl' / '_version.py'
+    version_locals = {}
 
-    def run_tests(self):
-        import pytest
-        errcode = pytest.main(self.test_args)
-        sys.exit(errcode)
+    if version_file.exists():
+        with open(version_file, 'r', encoding='utf-8') as f:
+            exec(f.read(), None, version_locals)
+        return version_locals.get('__version__', '0.1.0')
+    else:
+        return '0.1.0'
 
 
-def compile_fpga(): #vivado 2015.4 must be installed for this to work
-    cwd = os.getcwd()
+def get_long_description():
+    """Get long description from README files."""
+    # Try README.rst first, then README.md
+    readme_rst = read_file('README.rst')
+    if readme_rst:
+        return readme_rst
+
+    readme_md = read_file('README.md')
+    if readme_md:
+        return readme_md
+
+    return "DSP servo controller for quantum optics with the RedPitaya"
+
+
+def get_requirements():
+    """Get requirements, handling different environments."""
+    base_requirements = [
+        'scp',
+        'scipy',
+        'pyyaml',
+        'pandas',
+        'pyqtgraph',
+        'numpy>=1.16',
+        'paramiko>=2.7',
+        'qtpy>=1.11',
+        'nbconvert',
+        'jupyter-client',
+    ]
+
+    # Python version specific requirements
+    if sys.version_info >= (3, 7):
+        base_requirements.append('qasync')
+
+    # Environment specific requirements
+    if os.environ.get('READTHEDOCS') == 'True':
+        # Minimal requirements for ReadTheDocs
+        return ['sphinx', 'sphinx_bootstrap_theme']
+
+    return base_requirements
+
+
+def run_command(cmd, cwd=None):
+    """Run a shell command safely."""
     try:
-        os.chdir("pyrpl//fpga")
-        os.system("make")
-    finally:
-        os.chdir(cwd)
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Command '{cmd}' executed successfully")
+        return result.returncode == 0
+    except subprocess.CalledProcessError as e:
+        print(f"Command '{cmd}' failed with error: {e}")
+        return False
 
 
-def compile_server(): #gcc crosscompiler must be installed for this to work
-    cwd = os.getcwd()
-    try:
-        os.chdir("pyrpl//monitor_server")
-        os.system("make clean")
-        os.system("make")
-    finally:
-        os.chdir(cwd)
+class CompileFPGACommand(build_py):
+    """Custom command to compile FPGA code."""
+
+    def run(self):
+        """Run FPGA compilation."""
+        print("Compiling FPGA code...")
+        fpga_dir = SETUP_DIR / 'pyrpl' / 'fpga'
+
+        if fpga_dir.exists():
+            if run_command('make', cwd=fpga_dir):
+                print("FPGA compilation successful")
+            else:
+                print("FPGA compilation failed (Vivado may not be installed)")
+        else:
+            print("FPGA directory not found, skipping compilation")
+
+        # Continue with normal build
+        super().run()
 
 
-setup(name='pyrpl',
-      version=version,
-      description='DSP servo controller for quantum optics with the RedPitaya',
-      long_description=long_description,
-      author='Leonhard Neuhaus',
-      author_email='neuhaus@lkb.upmc.fr',
-      url='http://lneuhaus.github.io/pyrpl/',
-      license='MIT',
-      classifiers=['Programming Language :: Python :: 2.7',
-                   'Programming Language :: Python :: 3.4',
-                   'Programming Language :: Python :: 3.5',
-                   'Programming Language :: Python :: 3.6',
-                   'Programming Language :: Python :: 3.6',
-                   'Programming Language :: Python :: 3.7',
-                   'Programming Language :: Python :: 3.8',
-                   'Programming Language :: Python :: 3.9',
-                   'Programming Language :: Python :: 3.10',
-                   'Programming Language :: C',
-                   'Natural Language :: English',
-                   'Development Status :: 4 - Beta',
-                   'License :: OSI Approved :: MIT License',
-                   'Topic :: Scientific/Engineering :: Human Machine Interfaces',
-                   'Topic :: Scientific/Engineering :: Physics'],
-      keywords='RedPitaya DSP FPGA IIR PDH synchronous detection filter PID '
-               'control lockbox servo feedback lock quantum optics',
-      platforms='any',
-      packages=find_packages(), #['pyrpl'],
-      package_data={'pyrpl': ['fpga/*',
-                              'monitor_server/*',
-                              'config/*',
-                              'widgets/images/*']},
-      install_requires=requirements,
-      # what were the others for? dont remember..
-      #setup_requires=requirements,
-      #requires=requirements,
-      # stuff for unitary test with pytest
-      tests_require=['nose>=1.0'],
-      # extras_require={'testing': ['pytest']},
-	  test_suite='nose.collector',
-      # install options
-      cmdclass={'test': PyTest,
-                'fpga': compile_fpga,
-                'server': compile_server}
-      )
+class CompileServerCommand(build_py):
+    """Custom command to compile server code."""
+
+    def run(self):
+        """Run server compilation."""
+        print("Compiling server code...")
+        server_dir = SETUP_DIR / 'pyrpl' / 'monitor_server'
+
+        if server_dir.exists():
+            run_command('make clean', cwd=server_dir)
+            if run_command('make', cwd=server_dir):
+                print("Server compilation successful")
+            else:
+                print("Server compilation failed (GCC cross-compiler may not be installed)")
+        else:
+            print("Server directory not found, skipping compilation")
+
+        # Continue with normal build
+        super().run()
+
+
+class DevelopWithCompilation(develop):
+    """Development install with compilation."""
+
+    def run(self):
+        """Run development install with compilation."""
+        # Compile FPGA and server if requested
+        if '--compile-fpga' in sys.argv:
+            CompileFPGACommand(self.distribution).run()
+            sys.argv.remove('--compile-fpga')
+
+        if '--compile-server' in sys.argv:
+            CompileServerCommand(self.distribution).run()
+            sys.argv.remove('--compile-server')
+
+        # Continue with normal develop
+        super().run()
+
+
+# Package configuration
+setup(
+    name='pyrpl',
+    version=get_version(),
+    description='DSP servo controller for quantum optics with the RedPitaya',
+    long_description=get_long_description(),
+    long_description_content_type='text/markdown',  # or 'text/x-rst' if using RST
+
+    # Author information
+    author='Leonhard Neuhaus',
+    author_email='neuhaus@lkb.upmc.fr',
+    url='http://lneuhaus.github.io/pyrpl/',
+
+    # License and classifiers
+    license='MIT',
+    classifiers=[
+        'Development Status :: 4 - Beta',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: MIT License',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Programming Language :: C',
+        'Topic :: Scientific/Engineering :: Physics',
+        'Topic :: Scientific/Engineering :: Human Machine Interfaces',
+    ],
+
+    # Keywords
+    keywords=[
+        'RedPitaya', 'DSP', 'FPGA', 'IIR', 'PDH', 'synchronous detection',
+        'filter', 'PID', 'control', 'lockbox', 'servo', 'feedback', 'lock',
+        'quantum optics'
+    ],
+
+    # Package configuration
+    packages=find_packages(include=['pyrpl', 'pyrpl.*']),
+    package_data={
+        'pyrpl': [
+            'fpga/*',
+            'fpga/**/*',
+            'monitor_server/*',
+            'monitor_server/**/*',
+            'config/*',
+            'config/**/*',
+            'widgets/images/*',
+        ]
+    },
+    include_package_data=True,
+
+    # Requirements
+    python_requires='>=3.7',
+    install_requires=get_requirements(),
+
+    # Optional dependencies
+    extras_require={
+        'dev': [
+            'pytest>=6.0',
+            'pytest-cov',
+            'black',
+            'flake8',
+            'mypy',
+        ],
+        'gui': [
+            'matplotlib',
+            'PyQt5',  # or PyQt6
+        ],
+        'docs': [
+            'sphinx',
+            'sphinx_bootstrap_theme',
+            'pandoc',
+        ],
+    },
+
+    # Testing
+    test_suite='pytest',
+    tests_require=['pytest>=6.0'],
+
+    # Entry points (if you have command-line scripts)
+    # entry_points={
+    #     'console_scripts': [
+    #         'pyrpl=pyrpl.cli:main',
+    #     ],
+    # },
+
+    # Custom commands
+    cmdclass={
+        'build_fpga': CompileFPGACommand,
+        'build_server': CompileServerCommand,
+        'develop': DevelopWithCompilation,
+    },
+
+    # Project URLs
+    project_urls={
+        'Bug Reports': 'https://github.com/lneuhaus/pyrpl/issues',
+        'Source': 'https://github.com/lneuhaus/pyrpl',
+        'Documentation': 'http://lneuhaus.github.io/pyrpl/',
+    },
+
+    # Zip safety
+    zip_safe=False,
+)
