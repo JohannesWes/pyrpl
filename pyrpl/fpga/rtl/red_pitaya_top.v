@@ -304,6 +304,8 @@ wire  signed [14-1:0] fgen3_dac_a;
 wire  signed [14-1:0] fgen3_dac_b;
 wire                  fgen3_output_to_dsp_enable;
 
+wire                  iq0_square;
+
 // Signals to DSP
 wire  signed [14-1:0] dsp_asg1_input;
 wire  signed [14-1:0] dsp_asg2_input;
@@ -425,7 +427,8 @@ red_pitaya_hk i_hk (
   .sys_rdata       (  sys_rdata[ 0*32+31: 0*32]  ),  // read data
   .sys_err         (  sys_err[0]                 ),  // error indicator
   .sys_ack         (  sys_ack[0]                 ),   // acknowledge signal
-  .digital_pwm     (  dac_pwm_o                  )   // Digital PWM output
+  .digital_pwm     (  dac_pwm_o                  ),   // Digital PWM output
+  .iq0_square_i    (  iq0_square                 )    // IQ0 square wave output
 );
 
 IOBUF i_iobufp [8-1:0] (.O(exp_p_in), .IO(exp_p_io), .I(exp_p_out), .T(~exp_p_dir) );
@@ -613,6 +616,8 @@ red_pitaya_dsp i_dsp (
   .sys_err         (  sys_err[3]                 ),  // error indicator
   .sys_ack         (  sys_ack[3]                 )   // acknowledge signal
 );
+
+assign iq0_square = iq0_sin[LUTBITS-1]; // serves as reference for external lock-in amplifier
 
 // the ams module has been obsoleted by PWM control via DSP module (outputs)
 // and by the fact that RedPitaya has migrated aux. inputs to be PS controlled

@@ -1,4 +1,4 @@
-from ..attributes import IntRegister, SelectRegister, IORegister, BoolProperty
+from ..attributes import IntRegister, SelectRegister, IORegister, BoolProperty, BoolRegister
 from ..modules import HardwareModule
 from ..widgets.module_widgets.hk_widget import HkWidget
 import numpy as np
@@ -49,6 +49,9 @@ class HK(HardwareModule):
 
     led = IntRegister(0x30, doc="LED control with bits 1:8", min=0, max=2 ** 8)
 
+    iq0_square_enable = BoolRegister(0x34, bit=0, doc="Enable IQ0 square wave output")
+    iq0_square_pin = IntRegister(0x38, bits=4, doc="Expansion pin for IQ0 square wave (0-7)")
+
     # another option: access led as array of bools
     # led = [BoolRegister(0x30,bit=i,doc="LED "+str(i)) for i in range(8)]
 
@@ -98,3 +101,25 @@ class HK(HardwareModule):
         """
         self.pwm_direct_output = 1 if enable else 0
         return self.pwm_direct_output
+
+    def setup_iq0_square_output(self, pin=0, enable=True):
+        """
+        Configure IQ0 square wave output on expansion connector.
+
+        Parameters
+        ----------
+        pin : int
+            Expansion pin number (0-7) for P connector
+        enable : bool
+            Enable or disable the square wave output
+        """
+        if not 0 <= pin <= 7:
+            raise ValueError("Pin must be between 0 and 7")
+
+        self.iq0_square_pin = pin
+        self.iq0_square_enable = enable
+
+        if enable:
+            # Make sure PWM direct output is disabled
+            self.pwm_direct_output = False
+            self._logger.info(f"IQ0 square wave output enabled on expansion pin {pin}")

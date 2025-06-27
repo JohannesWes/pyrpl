@@ -45,7 +45,8 @@ module red_pitaya_hk #(
   input      [DWE-1:0] exp_n_dat_i,  //
   output reg [DWE-1:0] exp_n_dat_o,  //
   output reg [DWE-1:0] exp_n_dir_o,  //
-  input      [4-1  :0] digital_pwm, // Digital PWM values
+  input      [4-1  :0] digital_pwm,  // Digital PWM values
+  input                iq0_square_i,   
   // System bus
   input      [ 32-1:0] sys_addr   ,  // bus address
   input      [ 32-1:0] sys_wdata  ,  // bus write data
@@ -59,6 +60,9 @@ module red_pitaya_hk #(
 
 // Flag to control whether PWM signals are directly routed to expansion pins
 reg            pwm_direct_output;
+
+reg            iq0_square_enable;  // Enable routing of IQ0 square wave
+reg [3:0]      iq0_square_pin;    // Which expansion pin to route to (0-7)
 
 // Store system bus writes to exp_p_dat_o separately
 reg [DWE-1:0]  sys_exp_p_dat;
@@ -129,6 +133,8 @@ if (rstn_i == 1'b0) begin
   exp_n_dat_o      <= {DWE{1'b0}};
   exp_n_dir_o      <= {DWE{1'b0}};
   pwm_direct_output <= 1'b0;  // Default to disabled
+  iq0_square_enable <= 1'b0;
+  iq0_square_pin    <= 4'd0;  // Default to pin 0
   digital_loop     <= 1'b0;
 end else begin
   // Handle system bus writes
@@ -140,6 +146,8 @@ end else begin
     if (sys_addr[19:0]==20'h1C)   exp_n_dat_o       <= sys_wdata[DWE-1:0];
     if (sys_addr[19:0]==20'h28)   pwm_direct_output <= sys_wdata[0];
     if (sys_addr[19:0]==20'h30)   led_o             <= sys_wdata[DWL-1:0];
+    if (sys_addr[19:0]==20'h34)   iq0_square_enable <= sys_wdata[0];
+    if (sys_addr[19:0]==20'h38)   iq0_square_pin    <= sys_wdata[3:0];
   end
 end
 
@@ -159,6 +167,13 @@ always @(posedge clk_i) begin
     // Force directions for PWM pins to output
     exp_p_dir_o[3:0] <= 4'b1111;
     exp_p_dir_o[DWE-1:4] <= sys_exp_p_dir[DWE-1:4];
+  end else if (iq0_square_enable && (iq0_square_pin < 8)) begin
+    // IQ0 square wave mode - route to selected pin
+    exp_p_dat_o <= sys_exp_p_dat;
+    exp_p_dat_o[iq0_square_pin] <= iq0_square_i;
+    
+    exp_p_dir_o <= sys_exp_p_dir;
+    exp_p_dir_o[iq0_square_pin] <= 1'b1; // Force selected pin as output
   end else begin
     // In normal mode, use system bus values
     exp_p_dat_o <= sys_exp_p_dat;
@@ -194,6 +209,9 @@ end else begin
     20'h00028: begin sys_rdata <= {{32-  1{1'b0}}, pwm_direct_output} ; end
 
     20'h00030: begin sys_rdata <= {{32-DWL{1'b0}}, led_o}             ; end
+
+    20'h00034: begin sys_rdata <= {{32-  1{1'b0}}, iq0_square_enable} ; end
+    20'h00038: begin sys_rdata <= {{32-  4{1'b0}}, iq0_square_pin}    ; end
 
     default: begin sys_rdata <=  32'h0                              ; end
   endcase
