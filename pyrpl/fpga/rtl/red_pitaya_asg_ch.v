@@ -46,14 +46,13 @@ module red_pitaya_asg_ch #(
    input                      dac_clk_i       ,  //!< dac clock
    input                      dac_rstn_i      ,  //!< dac reset - active low
    // trigger
-   input                 trig_sw_i       ,  //!< software trigger
-   input                 trig_ext_i      ,  //!< external trigger
-   input      [  3-1: 0] trig_src_i      ,  //!< trigger source selector
-   output                trig_done_o     ,  //!< trigger event
    input                      trig_sw_i       ,  //!< software trigger
    input                      trig_ext_i      ,  //!< external trigger
    input      [  3-1: 0]      trig_src_i      ,  //!< trigger source selector
    output                     trig_done_o     ,  //!< trigger event
+
+   // external phase
+   input      [PHASEBITS-1:0] asg_phase_ext   ,  //!< phase input - allow for directly controlling the phase from an external module
    
    // buffer ctrl
    input                      buf_we_i        ,  //!< buffer write enable
@@ -105,16 +104,28 @@ wire  [RSZ+17-1: 0] dac_npnt;    // next read pointer
 wire  [RSZ+17-1: 0] dac_npnt_sub;
 wire                dac_npnt_sub_neg;
 
-reg   [  28-1: 0] dac_mult  ;
-reg   [  15-1: 0] dac_sum   ;
+// --- Scaling and Offset logic ---
+reg   [  28-1: 0] dac_mult  , dac_mult_reg;
+reg   [  15-1: 0] dac_sum;
 
 // read from buffer
 always @(posedge dac_clk_i)
 begin
-   buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
-   dac_rp     <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[RSZ+15:16];
-   dac_rd     <= dac_buf[dac_rp] ;
-   dac_rdat   <= dac_rd ;  // improve timing
+   // Calculate read pointers
+   if (USE_EXT_PHASE) begin // use externally supplied phase as read pointer
+       phase_sum <= asg_phase_ext[PHASEBITS-1:PHASEBITS-RSZ-16] + set_ofs_i[RSZ+16-1:0]; // use only the 30 MSBs from asg_phase_ext
+       dac_rp <= phase_sum[RSZ+16-1:16]; 
+       buf_rpnt_o <= phase_sum[RSZ+16-1:16];
+   end else begin
+       dac_rp <= (rand_on_i == 1'b1) ? rand_pnt_i : dac_pnt[RSZ+16-1:16];
+       buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
+   end
+
+   // pipeline the read pointer
+   dac_rp_reg <= dac_rp;
+
+   dac_rd   <= dac_buf[dac_rp_reg];
+   dac_rdat <= dac_rd;  // improve timing
 end
 
 // write to buffer
@@ -128,7 +139,8 @@ if (buf_we_i)  dac_buf[buf_addr_i] <= buf_wdata_i[14-1:0] ;
 // scale and offset
 always @(posedge dac_clk_i)
 begin
-   dac_mult <= $signed(dac_rdat) * $signed({1'b0,set_amp_i}) ;
+   dac_mult_reg <= $signed(dac_rdat) * $signed({1'b0,set_amp_i});
+   dac_mult <= dac_mult_reg;
    dac_sum  <= $signed(dac_mult[28-1:13]) + $signed(set_dc_i) ;
 
    // saturation

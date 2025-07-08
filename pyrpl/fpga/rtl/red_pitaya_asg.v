@@ -67,7 +67,10 @@
  * 
  */
 
-module red_pitaya_asg (
+module red_pitaya_asg #(
+   parameter PHASEBITS = 32,
+   parameter LUTBITS   = 17
+)(
   // DAC
   output     [ 14-1: 0] dac_a_o   ,  // DAC data CHA
   output     [ 14-1: 0] dac_b_o   ,  // DAC data CHB
@@ -79,8 +82,17 @@ module red_pitaya_asg (
  
   input                 trig_scope_i    ,  // trigger from the scope
 
-  output     [ 14-1: 0] asg1phase_o,
   output     [ 14-1: 0] asg1phase_o,  // phase for specific triggering funcitonalities - not used here
+
+  input     [PHASEBITS-1:0]  iq0_phase,
+  input     [PHASEBITS-1:0]  iq1_phase,
+  input     [PHASEBITS-1:0]  iq2_phase,
+
+  input signed [LUTBITS-1:0] iq0_sin,
+  input signed [LUTBITS-1:0] iq1_sin,
+  input signed [LUTBITS-1:0] iq2_sin,
+
+
 
   // System bus
   input      [ 32-1: 0] sys_addr  ,  // bus address
@@ -101,6 +113,11 @@ localparam RSZ = 14 ;  // RAM size 2^RSZ
 
 reg   [RSZ+15: 0] set_a_size   , set_b_size   ;
 reg   [RSZ+15: 0] set_a_step   , set_b_step   ;
+
+reg signed [LUTBITS-1:0] iq0_sin_reg;
+reg signed [LUTBITS-1:0] iq1_sin_reg;
+reg signed [LUTBITS-1:0] iq2_sin_reg;
+
 reg   [RSZ+15: 0] set_a_ofs    , set_b_ofs    ;
 reg               set_a_rst    , set_b_rst    ;
 reg               set_a_once   , set_b_once   ;
@@ -167,6 +184,8 @@ red_pitaya_asg_ch  #(.RSZ (RSZ)) ch [1:0] (
   .trig_ext_i      ({at_trig_a        , at_trig_b        }),  // advanced trigger as ext trigger - backwards-compatible with original version
   .trig_src_i      ({trig_b_src       , trig_a_src       }),  // trigger source selector
   .trig_done_o     ({trig_b_done      , trig_a_done      }),  // trigger event
+  // external phase - allows using phase of IQ2 as phase for the waveform generation
+  .asg_phase_ext   ({iq2_phase        , iq2_phase        }),  // external phase
   // buffer ctrl
   .buf_we_i        ({buf_b_we         , buf_a_we         }),  // buffer buffer write
   .buf_addr_i      ({buf_b_addr       , buf_a_addr       }),  // buffer address
@@ -277,6 +296,10 @@ if (dac_rstn_i == 1'b0) begin
    rand_b_on <= 1'b0;
 
 end else begin
+
+   iq0_sin_reg          <= iq0_sin;
+
+   // Set trigger sources
    trig_a_sw  <= sys_wen && (sys_addr[19:0]==20'h0) && sys_wdata[0]  ;
    if (sys_wen && (sys_addr[19:0]==20'h0))
       trig_a_src <= sys_wdata[2:0] ;

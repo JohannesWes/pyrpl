@@ -52,7 +52,9 @@ should not be used.
 
 
 module red_pitaya_dsp #(
-	parameter MODULES = 8
+	parameter MODULES = 8,
+   parameter PHASEBITS = 32,
+   parameter LUTBITS = 17
 )
 (
    // signals
@@ -77,6 +79,15 @@ module red_pitaya_dsp #(
 
    // trigger outputs for the scope
    output                trig_o,   // output from trigger dsp module
+
+   // output IQ signals and phases for using them in other modules
+   output signed [LUTBITS-1:0] iq0_sin_o,
+   output signed [LUTBITS-1:0] iq1_sin_o,
+   output signed [LUTBITS-1:0] iq2_sin_o,
+
+   output     [PHASEBITS-1:0] iq0_phase_o,
+   output     [PHASEBITS-1:0] iq1_phase_o,
+   output     [PHASEBITS-1:0] iq2_phase_o,
 
    // system bus
    input      [ 32-1: 0] sys_addr        ,  //!< bus address
@@ -386,18 +397,12 @@ generate for (j = 4; j < 5; j = j+1) begin
 end endgenerate
 
 
+// additional IQ wires
+wire [PHASEBITS-1:0] iq_phase [7:0];
+wire signed [LUTBITS-1:0]   iq_sin [7:0];
+
 //IQ modules
 generate for (j = 5; j < 7; j = j+1) begin
-    red_pitaya_iq_block 
-      iq
-      (
-	     // data
-	     .clk_i        (  clk_i          ),  // clock
-	     .rstn_i       (  rstn_i         ),  // reset - active low
-         .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
-	     .dat_i        (  input_signal [j] ),  // input data
-	     .dat_o        (  output_direct[j]),  // output data
-		 .signal_o     (  output_signal[j]),  // output signal
    red_pitaya_iq_block 
      iq
      (
@@ -408,6 +413,8 @@ generate for (j = 5; j < 7; j = j+1) begin
        .dat_i        (  input_signal [j] ),  // input data
        .dat_o        (  output_direct[j] ),  // output data
        .signal_o     (  output_signal[j] ),  // output signal
+       .iq_phase_o   (  iq_phase[j]      ),  // new phase output,
+       .sin_out      (  iq_sin[j]    ),  // output sine signals
 
        // not using 2nd quadrature for most iq's: multipliers will be
        // synthesized away by Vivado
@@ -425,17 +432,6 @@ end endgenerate
 
 // IQ module with two outputs
 generate for (j = 7; j < 8; j = j+1) begin
-    red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
-      iq_2_outputs
-      (
-         // data
-         .clk_i        (  clk_i          ),  // clock
-         .rstn_i       (  rstn_i         ),  // reset - active low
-         .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
-         .dat_i        (  input_signal [j] ),  // input data
-         .dat_o        (  output_direct[j]),  // output data
-         .signal_o     (  output_signal[j]),  // output signal
-         .signal2_o    (  output_signal[j*2]),  // output signal 2
    red_pitaya_iq_block #( .QUADRATUREFILTERSTAGES(4) )
      iq_2_outputs
      (
@@ -447,6 +443,8 @@ generate for (j = 7; j < 8; j = j+1) begin
        .dat_o        (  output_direct[j] ),  // output data
        .signal_o     (  output_signal[j] ),  // output signal
        .signal2_o    (  output_signal[j*2]), // output signal 2
+       .iq_phase_o   (  iq_phase[j]    ),   // new phase output
+       .sin_out      (  iq_sin[j]  ),
 
        // communication with PS
        .addr  ( sys_addr[16-1:0] ),
@@ -457,5 +455,13 @@ generate for (j = 7; j < 8; j = j+1) begin
        .wdata (sys_wdata)
      );
 end endgenerate
+
+assign iq0_phase_o = iq_phase[5];
+assign iq1_phase_o = iq_phase[6];
+assign iq2_phase_o = iq_phase[7];
+
+assign iq0_sin_o = iq_sin[5];
+assign iq1_sin_o = iq_sin[6];
+assign iq2_sin_o = iq_sin[7];
 
 endmodule

@@ -471,6 +471,15 @@ red_pitaya_scope i_scope (
 //  DAC arbitrary signal generator
 wire    [14-1: 0] asg1phase_o;
 
+wire [PHASEBITS-1:0] iq0_phase;
+wire [PHASEBITS-1:0] iq1_phase;
+wire [PHASEBITS-1:0] iq2_phase;
+
+wire signed [LUTBITS-1:0] iq0_sin;
+wire signed [LUTBITS-1:0] iq1_sin;
+wire signed [LUTBITS-1:0] iq2_sin;
+
+
 red_pitaya_asg i_asg (
    // DAC
   .dac_a_o         (  asg_a_output               ),  // CH 1
@@ -482,6 +491,15 @@ red_pitaya_asg i_asg (
   .trig_out_o      (  trig_asg_out               ),
   .trig_scope_i    (  trig_scope_out             ),
   .asg1phase_o     (  asg1phase_o                ),
+
+  .iq0_phase       (  iq0_phase                  ),
+  .iq1_phase       (  iq1_phase                  ),
+  .iq2_phase       (  iq2_phase                  ),
+
+  .iq0_sin         (  iq0_sin                    ),
+  .iq1_sin         (  iq1_sin                    ),
+  .iq2_sin         (  iq2_sin                    ),
+
   
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -518,6 +536,14 @@ red_pitaya_dsp i_dsp (
   .pwm3            (  pwm_signals[3]         ),
 
   .trig_o          (  dsp_trigger                ),
+
+  .iq0_phase_o     (  iq0_phase                  ),
+  .iq1_phase_o     (  iq1_phase                  ),
+  .iq2_phase_o     (  iq2_phase                  ),
+
+  .iq0_sin_o       (  iq0_sin                    ),
+  .iq1_sin_o       (  iq1_sin                    ),
+  .iq2_sin_o       (  iq2_sin                    ),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
