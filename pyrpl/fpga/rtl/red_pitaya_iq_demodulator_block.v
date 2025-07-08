@@ -64,6 +64,7 @@ module red_pitaya_iq_demodulator_block #(
     output signed [OUTBITS-1:0] signal2_o            
 );
 
+// Temporarily holds the input signal (signal_i) to ensure alignment with sine and cosine values in subsequent clock cycles
 reg signed [INBITS-1:0] firstproduct_reg;
 always @(posedge clk_i) begin
     firstproduct_reg <= signal_i;

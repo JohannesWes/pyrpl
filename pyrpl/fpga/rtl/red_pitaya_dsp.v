@@ -43,7 +43,7 @@ The second half of this file defines the different submodules. For custom submod
 a good point to start is red_pitaya_pid_block.v. 
 
 Submodule i is assigned the address space
-0x40300000 + i*0x10000 + (0x0000 to 0xFFFF), that is 2**16 bytes.
+0x4030_0000 + i*0x10000 + (0x0000 to 0xFFFF), that is 2**16 bytes.
 
 Addresses 0x403z00zz where z is an arbitrary hex character are reserved to manage 
 the input/output routing of the submodule and are not forwarded, and therefore 
@@ -84,7 +84,7 @@ module red_pitaya_dsp #(
    input      [  4-1: 0] sys_sel         ,  //!< bus write byte select
    input                 sys_wen         ,  //!< bus write enable
    input                 sys_ren         ,  //!< bus read enable
-   output reg [ 32-1: 0] sys_rdata   ,  //!< bus read data
+   output reg [ 32-1: 0] sys_rdata       ,  //!< bus read data
    output reg            sys_err         ,  //!< bus error indicator
    output reg            sys_ack            //!< bus acknowledge signal
 );
@@ -398,22 +398,32 @@ generate for (j = 5; j < 7; j = j+1) begin
 	     .dat_i        (  input_signal [j] ),  // input data
 	     .dat_o        (  output_direct[j]),  // output data
 		 .signal_o     (  output_signal[j]),  // output signal
+   red_pitaya_iq_block 
+     iq
+     (
+       // data
+       .clk_i        (  clk_i            ),  // clock
+       .rstn_i       (  rstn_i           ),  // reset - active low
+       .sync_i       (  sync[j]          ),  // synchronization of different dsp modules
+       .dat_i        (  input_signal [j] ),  // input data
+       .dat_o        (  output_direct[j] ),  // output data
+       .signal_o     (  output_signal[j] ),  // output signal
 
-         // not using 2nd quadrature for most iq's: multipliers will be
-         // synthesized away by Vivado
-         //.signal2_o  (  output_signal[j*2]),  // output signal
+       // not using 2nd quadrature for most iq's: multipliers will be
+       // synthesized away by Vivado
+       //.signal2_o  (  output_signal[j*2]),  // output signal
 
-		 //communincation with PS
-		 .addr ( sys_addr[16-1:0] ),
-		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-		 .ack  ( module_ack[j] ),
-		 .rdata (module_rdata[j]),
-	     .wdata (sys_wdata)
-      );
+       // communication with PS
+       .addr ( sys_addr[16-1:0] ),
+       .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+       .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+       .ack  ( module_ack[j] ),
+       .rdata (module_rdata[j]),
+       .wdata (sys_wdata)
+     );
 end endgenerate
 
-// IQ with two outputs
+// IQ module with two outputs
 generate for (j = 7; j < 8; j = j+1) begin
     red_pitaya_iq_block   #( .QUADRATUREFILTERSTAGES(4) )
       iq_2_outputs
@@ -426,15 +436,26 @@ generate for (j = 7; j < 8; j = j+1) begin
          .dat_o        (  output_direct[j]),  // output data
          .signal_o     (  output_signal[j]),  // output signal
          .signal2_o    (  output_signal[j*2]),  // output signal 2
+   red_pitaya_iq_block #( .QUADRATUREFILTERSTAGES(4) )
+     iq_2_outputs
+     (
+       // data
+       .clk_i        (  clk_i            ),  // clock
+       .rstn_i       (  rstn_i           ),  // reset - active low
+       .sync_i       (  sync[j]          ),  // synchronization of different dsp modules
+       .dat_i        (  input_signal [j] ),  // input data
+       .dat_o        (  output_direct[j] ),  // output data
+       .signal_o     (  output_signal[j] ),  // output signal
+       .signal2_o    (  output_signal[j*2]), // output signal 2
 
-         //communincation with PS
-         .addr ( sys_addr[16-1:0] ),
-         .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-         .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-         .ack  ( module_ack[j] ),
-         .rdata (module_rdata[j]),
-         .wdata (sys_wdata)
-      );
+       // communication with PS
+       .addr  ( sys_addr[16-1:0] ),
+       .wen   ( sys_wen & (sys_addr[20-1:16]==j) ),
+       .ren   ( sys_ren & (sys_addr[20-1:16]==j) ),
+       .ack   ( module_ack[j] ),
+       .rdata (module_rdata[j]),
+       .wdata (sys_wdata)
+     );
 end endgenerate
 
 endmodule

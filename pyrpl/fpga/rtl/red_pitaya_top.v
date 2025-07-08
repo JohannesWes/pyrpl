@@ -297,7 +297,7 @@ reg          [14-1:0] dac_dat_a, dac_dat_b;
 wire         [14-1:0] dac_a    , dac_b    ;
 
 // ASG
-wire  signed [14-1:0] asg_a    , asg_b    ;
+wire  signed [14-1:0] asg_a_output    , asg_b_output    ;
 
 // configuration
 wire                  digital_loop;
@@ -473,8 +473,8 @@ wire    [14-1: 0] asg1phase_o;
 
 red_pitaya_asg i_asg (
    // DAC
-  .dac_a_o         (  asg_a                      ),  // CH 1
-  .dac_b_o         (  asg_b                      ),  // CH 2
+  .dac_a_o         (  asg_a_output               ),  // CH 1
+  .dac_b_o         (  asg_b_output               ),  // CH 2
   .dac_clk_i       (  adc_clk                    ),  // clock
   .dac_rstn_i      (  adc_rstn                   ),  // reset - active low
   .trig_a_i        (  exp_p_in[0]                ),
@@ -517,7 +517,7 @@ red_pitaya_dsp i_dsp (
   .pwm2            (  pwm_signals[2]         ),
   .pwm3            (  pwm_signals[3]         ),
 
-  .trig_o          (  dsp_trigger            ),
+  .trig_o          (  dsp_trigger                ),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address

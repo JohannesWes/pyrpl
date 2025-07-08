@@ -140,10 +140,13 @@ assign invertsignal4 = wwphase4[PHASEBITS-1];
 
 //main loop
 always @(posedge clk_i) begin
+    // 1) Next-phase computations:
     phase1 <= invertphase1 ? (~wphase1) : wphase1;  //phase1 ready in cycle n+1
     phase2 <= invertphase2 ? (~wphase2) : wphase2;
     phase3 <= invertphase3 ? (~wphase3) : wphase3;
     phase4 <= invertphase4 ? (~wphase4) : wphase4;
+
+    // 2) Register the sign bits
     invertsignal1_reg <= invertsignal1; //invertsignal1_reg ready in cycle n+1
     invertsignal2_reg <= invertsignal2;
     invertsignal3_reg <= invertsignal3;
@@ -152,10 +155,14 @@ always @(posedge clk_i) begin
     invertsignal2_reg_reg <= invertsignal2_reg;
     invertsignal3_reg_reg <= invertsignal3_reg;
     invertsignal4_reg_reg <= invertsignal4_reg;
+
+    // 3) Read LUT outputs for the next cycle
     sin_reg <= lutrom[phase1];    //sin_reg ready in cycle n+2
     cos_reg <= lutrom[phase2];
     sin_shifted_reg <= lutrom[phase3];
     cos_shifted_reg <= lutrom[phase4];
+
+    // 4) Reset vs. Running State
     if (on==1'b0) begin
         phase <= {PHASEBITS{1'b0}}; 
         sin <= {LUTBITS{1'b0}};
@@ -163,8 +170,11 @@ always @(posedge clk_i) begin
         sin_shifted <= {LUTBITS{1'b0}};
         cos_shifted <= {LUTBITS{1'b0}};
     end 
-    else begin 
+    else begin
+        // 5) Advance the phase accumulator 
         phase <= phase + shift_phase; // new phase is ready in (arbitrary) cycle n
+
+        // 6) Invert sign if needed
         sin <= invertsignal1_reg_reg ? ((~sin_reg)+'b1) : sin_reg;    //sin ready in cycle n+3  - based purely on signals that are ready in cycle n+2 -> timing correct, latency 3 cycles
         cos <= invertsignal2_reg_reg ? ((~cos_reg)+'b1) : cos_reg; 
         sin_shifted <= invertsignal3_reg_reg ? ((~sin_shifted_reg)+'b1) : sin_shifted_reg;  

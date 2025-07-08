@@ -36,64 +36,79 @@
 
 module red_pitaya_asg_ch #(
    parameter RSZ = 14,
-   parameter CYCLE_BITS = 32
+   parameter DACBITS = 14,
+   parameter CYCLE_BITS = 32,
+   parameter PHASEBITS = 32,
+   parameter USE_EXT_PHASE = 0                   // currently hardcoded to 0 - not using external phase  
 )(
    // DAC
-   output reg [ 14-1: 0] dac_o           ,  //!< dac data output
-   input                 dac_clk_i       ,  //!< dac clock
-   input                 dac_rstn_i      ,  //!< dac reset - active low
+   output reg [ DACBITS-1: 0] dac_o           ,  //!< dac data output
+   input                      dac_clk_i       ,  //!< dac clock
+   input                      dac_rstn_i      ,  //!< dac reset - active low
    // trigger
    input                 trig_sw_i       ,  //!< software trigger
    input                 trig_ext_i      ,  //!< external trigger
    input      [  3-1: 0] trig_src_i      ,  //!< trigger source selector
    output                trig_done_o     ,  //!< trigger event
+   input                      trig_sw_i       ,  //!< software trigger
+   input                      trig_ext_i      ,  //!< external trigger
+   input      [  3-1: 0]      trig_src_i      ,  //!< trigger source selector
+   output                     trig_done_o     ,  //!< trigger event
    
    // buffer ctrl
-   input                 buf_we_i        ,  //!< buffer write enable
-   input      [ 14-1: 0] buf_addr_i      ,  //!< buffer address
-   input      [ 14-1: 0] buf_wdata_i     ,  //!< buffer write data
-   output reg [ 14-1: 0] buf_rdata_o     ,  //!< buffer read data
-   output reg [RSZ-1: 0] buf_rpnt_o      ,  //!< buffer current read pointer
+   input                      buf_we_i        ,  //!< buffer write enable
+   input      [ RSZ-1: 0]     buf_addr_i      ,  //!< buffer address
+   input      [ RSZ-1: 0]     buf_wdata_i     ,  //!< buffer write data
+   output reg [ RSZ-1: 0]     buf_rdata_o     ,  //!< buffer read data
+   output reg [ RSZ-1: 0]     buf_rpnt_o      ,  //!< buffer current read pointer
 
    // configuration
-   input     [RSZ+16-1: 0] set_size_i      ,  //!< set table data size
-   input     [RSZ+16-1: 0] set_step_i      ,  //!< set pointer step
-   input     [RSZ+16-1: 0] set_ofs_i       ,  //!< set reset offset
-   input                 set_rst_i       ,  //!< set FSM to reset
-   input                 set_once_i      ,  //!< set only once  -- not used
-   input                 set_wrap_i      ,  //!< set wrap enable
-   input     [  14-1: 0] set_amp_i       ,  //!< set amplitude scale
-   input     [  14-1: 0] set_dc_i        ,  //!< set output offset
-   input                 set_zero_i      ,  //!< set output to zero
-   input     [  CYCLE_BITS-1: 0] set_ncyc_i      ,  //!< set number of cycle
-   input     [  16-1: 0] set_rnum_i      ,  //!< set number of repetitions
-   input     [  32-1: 0] set_rdly_i      ,  //!< set delay between repetitions
-   input                 set_rgate_i     ,  //!< set external gated repetition
+   input     [RSZ+16-1: 0]    set_size_i    ,  //!< set table data size
+   input     [RSZ+16-1: 0]    set_step_i    ,  //!< set pointer step
+
+   input     [RSZ+16-1: 0]    set_ofs_i     ,  //!< set reset offset
+
+   input     [ DACBITS-1: 0]  set_amp_i       ,  //!< set amplitude scale
+
+   input                      set_rst_i       ,  //!< set FSM to reset
+   input                      set_once_i      ,  //!< set only once  -- not used
+   input                      set_wrap_i      ,  //!< set wrap enable
+
+   input     [ DACBITS-1: 0]  set_dc_i        ,  //!< set output offset
+   input                      set_zero_i      ,  //!< set output to zero
+   input     [  CYCLE_BITS-1: 0] set_ncyc_i   ,  //!< set number of cycle
+   input     [  16-1: 0]      set_rnum_i      ,  //!< set number of repetitions
+   input     [  32-1: 0]      set_rdly_i      ,  //!< set delay between repetitions
+   input                      set_rgate_i     ,  //!< set external gated repetition
 
 
-   input                 rand_on_i     , // random number generator on
-   input     [RSZ-1:0]   rand_pnt_i      // random pointer for output data
+   input                      rand_on_i       ,  // random number generator on
+   input     [RSZ-1:0]        rand_pnt_i         // random pointer for output data
 
 );
 
 //---------------------------------------------------------------------------------
 //
 //  DAC buffer RAM
-
+(* ram_style = "block" *) // Synthesis hint
 reg   [  14-1: 0] dac_buf [0:(1<<RSZ)-1] ;
-reg   [  14-1: 0] dac_rd    ;
-reg   [  14-1: 0] dac_rdat  ;
-reg   [ RSZ-1: 0] dac_rp    ;
-reg   [RSZ+16-1: 0] dac_pnt   ; // read pointer
-reg   [RSZ+16-1: 0] dac_pntp  ; // previous read pointer
-wire  [RSZ+17-1: 0] dac_npnt  ; // next read pointer
-wire  [RSZ+17-1: 0] dac_npnt_sub ;
-wire              dac_npnt_sub_neg;
+
+// --- Read path logic  ---
+reg   [  14-1: 0] dac_rd;
+reg   [  14-1: 0] dac_rdat;
+reg   [ RSZ-1: 0] dac_rp;
+reg   [ RSZ-1: 0] dac_rp_reg;    // Registered version of dac_rp for stable indexing
+reg   [RSZ+16-1: 0] phase_sum;
+reg   [RSZ+16-1: 0] dac_pnt;     // read pointer - fractional bits for sub-sample precision
+reg   [RSZ+16-1: 0] dac_pntp;    // previous read pointer
+wire  [RSZ+17-1: 0] dac_npnt;    // next read pointer
+wire  [RSZ+17-1: 0] dac_npnt_sub;
+wire                dac_npnt_sub_neg;
 
 reg   [  28-1: 0] dac_mult  ;
 reg   [  15-1: 0] dac_sum   ;
 
-// read
+// read from buffer
 always @(posedge dac_clk_i)
 begin
    buf_rpnt_o <= dac_pnt[16+RSZ-1:16];
@@ -102,7 +117,7 @@ begin
    dac_rdat   <= dac_rd ;  // improve timing
 end
 
-// write
+// write to buffer
 always @(posedge dac_clk_i)
 if (buf_we_i)  dac_buf[buf_addr_i] <= buf_wdata_i[14-1:0] ;
 
@@ -134,10 +149,10 @@ reg  [  16-1: 0] rep_cnt      ;
 reg  [  32-1: 0] dly_cnt      ;
 reg  [   8-1: 0] dly_tick     ;
 
-reg              dac_do       ;
-reg              dac_rep      ;
-wire             dac_trig     ;
-reg              dac_trigr    ;
+reg              dac_do       ; // indicate if waveform generation currently active
+reg              dac_rep      ; // indicate if module is in waveform repetition mode
+wire             dac_trig     ; // trigger signal for starting or continuing waveform generation
+reg              dac_trigr    ; // holds previous value of dac_trig to detect transitions
 
 // state machine
 always @(posedge dac_clk_i) begin
@@ -153,13 +168,13 @@ always @(posedge dac_clk_i) begin
       dac_trigr <=  1'b0 ;
    end
    else begin
-      // make 1us tick
+      // make 1 us tick for timing desired delay between repetitions
       if (dac_do || (dly_tick == 8'd124))
          dly_tick <= 8'h0 ;
       else
          dly_tick <= dly_tick + 8'h1 ;
 
-      // delay between repetitions 
+      // delay between repetitions of the waveform
       if (set_rst_i || dac_do)
          dly_cnt <= set_rdly_i ;
       else if (|dly_cnt && (dly_tick == 8'd124))
@@ -167,7 +182,7 @@ always @(posedge dac_clk_i) begin
 
       // repetitions counter
       if (trig_in && !dac_do)
-         rep_cnt <= set_rnum_i ;
+         rep_cnt <= set_rnum_i ; // initial value - decremented each repitition
       else if (!set_rgate_i && (|rep_cnt && dac_rep && (dac_trig && !dac_do)))
          rep_cnt <= rep_cnt - 16'h1 ;
       else if (set_rgate_i && ((!trig_ext_i && trig_src_i==3'd2) || (trig_ext_i && trig_src_i==3'd3)))
@@ -207,7 +222,8 @@ always @(posedge dac_clk_i) begin
 end
 
 assign dac_trig = (!dac_rep && trig_in) || (dac_rep && |rep_cnt && (dly_cnt == 32'h0)) ;
-
+// check if we are at the end of the waveform buffer (computes difference between next pointer and size of the waveform buffer) & check if negative
+// Calculate wrap conditions
 assign dac_npnt_sub = dac_npnt - {1'b0,set_size_i} - 1;
 assign dac_npnt_sub_neg = dac_npnt_sub[RSZ+16];
 

@@ -36,7 +36,7 @@ class WaveformAttribute(SelectProperty):
     def set_value(self, instance, waveform):
         waveform = waveform.lower()
         if not waveform in instance.waveforms:
-            raise ValueError("waveform shourd be one of " + instance.waveforms)
+            raise ValueError("waveform should be one of " + ", ".join(instance.waveforms))
         else:
             if waveform == 'noise':
                 # current amplitude becomes rms amplitude
@@ -182,7 +182,7 @@ def make_asg(channel=0):
         _sm_wrappointer = BoolRegister(0x0, 4 + _BIT_OFFSET,
                                        doc='If False, fgen starts from data[0] value after each cycle. If True, assumes that data is periodic and jumps to the naturally next index after full cycle.')
 
-        # register set_a_rgate
+        # register set_a_size/set_b_size
         _counter_wrap = IntRegister(0x8 + _VALUE_OFFSET,
                                     bits=32,
                                     doc="Raw phase value where counter wraps around. To be set to 2**16*(2**14-1) = 0x3FFFFFFF in virtually all cases. ")
