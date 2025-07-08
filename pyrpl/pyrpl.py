@@ -38,8 +38,8 @@ from .async_utils import sleep
 
 # it is important that Lockbox is loaded before the models
 #from .software_modules.lockbox import *
-from .software_modules import lockbox
-from .software_modules.lockbox import models
+# from .software_modules import lockbox
+# from .software_modules.lockbox import models
 #from .software_modules.lockbox.models import *  # make sure all models are
 # loaded when we get started
 from . import user_config_dir
@@ -67,8 +67,7 @@ default_pyrpl_config = {'name': 'default_pyrpl_instance',
                         'modules': ['NetworkAnalyzer',
                                     'SpectrumAnalyzer',
                                     'CurveViewer',
-                                    'PyrplConfig',
-                                    'Lockbox'
+                                    'PyrplConfig'
                                     ]}
 
 help_message = """
@@ -237,7 +236,7 @@ class Pyrpl(object):
         """
         self.software_modules = []
         # software modules are Managers for various modules plus those defined in the config file
-        soft_mod_names = ['Asgs', 'Iqs', 'Pids', 'Scopes', 'Iirs', 'Trigs','Pwms',
+        soft_mod_names = ['Asgs', 'Iqs', 'Scopes', 'Iirs', 'Trigs','Pwms', #'Pids',
                           'Hks'] + self.c.pyrpl.modules
         module_classes = [get_module(cls_name)
                           for cls_name in soft_mod_names]

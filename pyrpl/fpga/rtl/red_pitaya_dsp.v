@@ -318,38 +318,40 @@ end
  MODULE DEFINITIONS
  *********************************************/
 
-//PID
+//PID # PID Module currently disabled due to not enough resources on FPGA
 
-wire [14-1:0] diff_input_signal [3-1:0];
-wire [14-1:0] diff_output_signal [3-1:0];
-//assign diff_input_signal[0] = input_signal[1]; // difference input of PID0 is PID1
-//assign diff_input_signal[1] = input_signal[0]; // difference input of PID1 is PID0
-assign diff_input_signal[0] = diff_output_signal[1]; // difference input of PID0 is PID1
-assign diff_input_signal[1] = diff_output_signal[0]; // difference input of PID1 is PID0
-assign diff_input_signal[2] = {14{1'b0}};      // difference input of PID2 is zero
+// wire [14-1:0] diff_input_signal [3-1:0];
+// wire [14-1:0] diff_output_signal [3-1:0];
+// //assign diff_input_signal[0] = input_signal[1]; // difference input of PID0 is PID1
+// //assign diff_input_signal[1] = input_signal[0]; // difference input of PID1 is PID0
+// assign diff_input_signal[0] = diff_output_signal[1]; // difference input of PID0 is PID1
+// assign diff_input_signal[1] = diff_output_signal[0]; // difference input of PID1 is PID0
+// assign diff_input_signal[2] = {14{1'b0}};      // difference input of PID2 is zero
 
-generate for (j = 0; j < 3; j = j+1) begin
-   red_pitaya_pid_block i_pid (
-     // data
-     .clk_i        (  clk_i          ),  // clock
-     .rstn_i       (  rstn_i         ),  // reset - active low
-     .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
-     .dat_i        (  input_signal [j] ),  // input data
-     .dat_o        (  output_direct[j]),  // output data
-	 .diff_dat_i   (  diff_input_signal[j] ),  // input data for differential mode
-	 .diff_dat_o   (  diff_output_signal[j] ),  // output data for differential mode
+// generate for (j = 0; j < 3; j = j+1) begin
+//    red_pitaya_pid_block i_pid (
+//      // data
+//      .clk_i        (  clk_i          ),  // clock
+//      .rstn_i       (  rstn_i         ),  // reset - active low
+//      .sync_i       (  sync[j]        ),  // syncronization of different dsp modules
+//      .dat_i        (  input_signal [j] ),  // input data
+//      .dat_o        (  output_direct[j]),  // output data
+// 	 .diff_dat_i   (  diff_input_signal[j] ),  // input data for differential mode
+// 	 .diff_dat_o   (  diff_output_signal[j] ),  // output data for differential mode
 
-	 //communincation with PS
-	 .addr ( sys_addr[16-1:0] ),
-	 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-	 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-	 .ack  ( module_ack[j] ),
-	 .rdata (module_rdata[j]),
-     .wdata (sys_wdata)
-   );
-   assign output_signal[j] = output_direct[j];
-end
-endgenerate
+// 	 //communincation with PS
+// 	 .addr ( sys_addr[16-1:0] ),
+// 	 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+// 	 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+// 	 .ack  ( module_ack[j] ),
+// 	 .rdata (module_rdata[j]),
+//      .wdata (sys_wdata)
+//    );
+//    assign output_signal[j] = output_direct[j];
+// end
+// endgenerate
+
+
 
 wire trig_signal;
 //TRIG
