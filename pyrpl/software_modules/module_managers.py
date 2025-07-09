@@ -50,7 +50,7 @@ starting from the end of the list) is returned by the module manager:
 
 import logging
 logger = logging.getLogger(name=__name__)
-from ..widgets.module_widgets import ModuleManagerWidget, AsgManagerWidget, PidManagerWidget, IqManagerWidget, \
+from ..widgets.module_widgets import ModuleManagerWidget, AsgManagerWidget, Fgen3ManagerWidget, PidManagerWidget, IqManagerWidget, \
     ScopeManagerWidget, IirManagerWidget, PwmManagerWidget
 from ..modules import Module
 
@@ -151,6 +151,9 @@ class ModuleManager(Module):
 
 class Asgs(ModuleManager):
     _widget_class = AsgManagerWidget
+
+class Fgen3s(ModuleManager):
+    _widget_class = Fgen3ManagerWidget
 
 class Pwms(ModuleManager):
     _widget_class = PwmManagerWidget

@@ -80,7 +80,13 @@
  * 
  */
 
-module red_pitaya_top (
+module red_pitaya_top #(
+  parameter PHASEBITS = 32,
+  parameter LUTBITS   = 17,
+  parameter FGEN3_PHASEBITS = 32,
+  parameter FGEN3_FM_MOD_BITS   = 17,
+  parameter DWE = 8, // data width for expansion connector
+)(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
    inout            FIXED_IO_ps_clk    ,
@@ -253,10 +259,6 @@ assign sys_rdata[5*32+:32] = 32'h0;
 assign sys_err  [5       ] =  1'b0;
 assign sys_ack  [5       ] =  1'b1;
 
-assign sys_rdata[6*32+:32] = 32'h0; 
-assign sys_err  [6       ] =  1'b0;
-assign sys_ack  [6       ] =  1'b1;
-
 assign sys_rdata[7*32+:32] = 32'h0; 
 assign sys_err  [7       ] =  1'b0;
 assign sys_ack  [7       ] =  1'b1;
@@ -298,6 +300,16 @@ wire         [14-1:0] dac_a    , dac_b    ;
 
 // ASG
 wire  signed [14-1:0] asg_a_output    , asg_b_output    ;
+
+wire  signed [14-1:0] fgen3_dac_a;
+wire  signed [14-1:0] fgen3_dac_b;
+wire                  fgen3_output_to_dsp_enable;
+
+wire                  iq0_square;
+
+// Signals to DSP
+wire  signed [14-1:0] dsp_asg1_input;
+wire  signed [14-1:0] dsp_asg2_input;
 
 // configuration
 wire                  digital_loop;
@@ -407,6 +419,10 @@ red_pitaya_hk i_hk (
   .exp_n_dat_i     (  exp_n_in                   ),
   .exp_n_dat_o     (  exp_n_out                  ),
   .exp_n_dir_o     (  exp_n_dir                  ),
+
+  .mod_exp_p_dat   ( {DWE-2{1'b0}, iq0_square, 1'b0}), // putting fm reference signal pin 1 of expansion connector
+  .mod_exp_n_dat   ( {DWE-1{1'b0}}               ),
+
    // System bus
   .sys_addr        (  sys_addr                   ),  // address
   .sys_wdata       (  sys_wdata                  ),  // write data
@@ -524,16 +540,16 @@ red_pitaya_dsp i_dsp (
   .dat_a_o         (  dac_a                      ),  // out 1
   .dat_b_o         (  dac_b                      ),  // out 2
   
-  .asg1_i          (  asg_a                  ),
-  .asg2_i          (  asg_b                  ),
-  .scope1_o        (  to_scope_a             ),
-  .scope2_o        (  to_scope_b             ),
-  .asg1phase_i     (  asg1phase_o            ),
+  .asg1_i          (  dsp_asg1_input             ),
+  .asg2_i          (  dsp_asg2_input             ),
+  .scope1_o        (  to_scope_a                 ),
+  .scope2_o        (  to_scope_b                 ),
+  .asg1phase_i     (  asg1phase_o                ),
 
-  .pwm0            (  pwm_signals[0]         ),
-  .pwm1            (  pwm_signals[1]         ),
-  .pwm2            (  pwm_signals[2]         ),
-  .pwm3            (  pwm_signals[3]         ),
+  .pwm0            (  pwm_signals[0]             ),
+  .pwm1            (  pwm_signals[1]             ),
+  .pwm2            (  pwm_signals[2]             ),
+  .pwm3            (  pwm_signals[3]             ),
 
   .trig_o          (  dsp_trigger                ),
 
@@ -555,6 +571,8 @@ red_pitaya_dsp i_dsp (
   .sys_err         (  sys_err[3]                 ),  // error indicator
   .sys_ack         (  sys_ack[3]                 )   // acknowledge signal
 );
+
+assign iq0_square = iq0_sin[LUTBITS-1]; // serves as square-wave reference for external lock-in amplifier
 
 // the ams module has been obsoleted by PWM control via DSP module (outputs)
 // and by the fact that RedPitaya has migrated aux. inputs to be PS controlled

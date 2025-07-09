@@ -47,6 +47,7 @@ add_files                         $path_rtl/axi_wr_fifo.v
 add_files                      $path_rtl/red_pitaya_ams.v
 add_files                      $path_rtl/red_pitaya_asg_ch.v
 add_files                      $path_rtl/red_pitaya_asg.v
+add_files                      $path_rtl/red_pitaya_3fgen.v
 add_files                      $path_rtl/red_pitaya_dfilt1.v
 add_files                      $path_rtl/red_pitaya_hk.v
 add_files                      $path_rtl/red_pitaya_pid_block.v
@@ -73,6 +74,9 @@ add_files                      $path_rtl/red_pitaya_iq_fgen_block.v
 add_files                      $path_rtl/red_pitaya_iq_block.v
 add_files                      $path_rtl/red_pitaya_trigger_block.v
 add_files                      $path_rtl/red_pitaya_prng.v
+add_files                      $path_rtl/red_pitaya_quarter_wave_lut.v
+add_files                      $path_rtl/red_pitaya_3fgen.v
+
 
 add_files -fileset constrs_1      $path_sdc/red_pitaya.xdc
 
