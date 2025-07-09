@@ -26,6 +26,7 @@ from .filter import FilterModule
 from .hk import HK
 from .scope import Scope
 from .asg import Asg0, Asg1
+from .fgen3 import Fgen3
 # from .pid import Pid
 from .sampler import Sampler
 from .pwm import Pwm
