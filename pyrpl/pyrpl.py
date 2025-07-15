@@ -218,6 +218,10 @@ class Pyrpl(object):
         if self.c.redpitaya.gui:
             self.show_gui()
 
+        # workaround, such that the asgs don't blast 1 V out on startup
+        self.rp.asg1.amplitude = 0.0
+        self.rp.asg0.amplitude = 0.0
+
     def show_gui(self):
         if len(self.widgets) == 0:
             widget = self._create_widget()

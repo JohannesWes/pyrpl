@@ -27,6 +27,8 @@ from ..modules import HardwareModule, SignalModule
 from ..widgets.module_widgets import AsgWidget
 from . import all_output_directs, dsp_addr_base
 
+# temporary limit. I damaged some equipment using higher power.
+MAX_VOLTAGE = 0.2
 
 class WaveformAttribute(SelectProperty):
     default = 'sin'
@@ -82,25 +84,47 @@ class WaveformAttribute(SelectProperty):
         return waveform
 
 
+# FIXME: the workaround with the MAX_VOLTAGE is quite unelegant
 class AsgAmplitudeAttribute(FloatRegister):
+    """ workaround to make rms amplitude work"""
+
+    def __init__(self, *args, **kwargs):
+        # Override max in kwargs to ensure it's always set to MAX_VOLTAGE
+        self.MAX_VOLTAGE = MAX_VOLTAGE
+        kwargs['max'] = self.MAX_VOLTAGE
+        super(AsgAmplitudeAttribute, self).__init__(*args, **kwargs)
+
+
     """ workaround to make rms amplitude work"""
     def get_value(self, obj):
         if obj.waveform == 'noise':
-            return obj._rmsamplitude
+            # Ensure noise amplitude also respects the voltage limit
+            return min(obj._rmsamplitude, self.MAX_VOLTAGE)
         else:
-            return super(AsgAmplitudeAttribute, self).get_value(obj)
+            value = super(AsgAmplitudeAttribute, self).get_value(obj)
+            return min(value, self.MAX_VOLTAGE)
 
     def set_value(self, obj, val):
+        # Clamp the value to MAX_VOLTAGE before setting
+        val = min(abs(val), self.MAX_VOLTAGE)
+
         if obj.waveform == 'noise':
             # internally memorize the amplitude as it is not directly
             # stored in the fpga (see set_value(obj, 1.0) call below)
             obj._rmsamplitude = val
             # fill normal-distributed data into data memory
             obj.data = obj._noise_distribution()
-            # multiplier set to 1.0 to benefit from full available resolution
-            super(AsgAmplitudeAttribute, self).set_value(obj, 1.0)
+            # Enforce the voltage limit for the FPGA amplitude
+            super(AsgAmplitudeAttribute, self).set_value(obj, min(1.0, self.MAX_VOLTAGE))
         else:
             super(AsgAmplitudeAttribute, self).set_value(obj, val)
+
+    def validate(self, value):
+        # Additional validation for maximum voltage
+        if abs(value) > self.MAX_VOLTAGE:
+            print(f"Amplitude cannot exceed {self.MAX_VOLTAGE}V")
+            return self.MAX_VOLTAGE
+        return value
 
 
 
@@ -215,13 +239,13 @@ def make_asg(channel=0):
         offset = AsgOffsetAttribute(default=0,
                                     increment=1./2**13,
                                     min=-1.,
-                                    max=1.,
+                                    max=MAX_VOLTAGE,
                                     doc="output offset [volts]")
 
         # formerly scale
         amplitude = AsgAmplitudeAttribute(0x4 + _VALUE_OFFSET, bits=14, bitmask=0x3FFF,
                                   norm=2.**13, signed=False,
-                                  max=1.0,  # Internal fpga max is 2.0 V
+                                  max=MAX_VOLTAGE,  # Internal fpga max is 2.0 V # FIXME: changed maximum voltage here as soft-fix
                                   # i.e. it is possible to define waveforms
                                   # with smaller values and then boost them,
                                   #  but there is no real interest to do so.
