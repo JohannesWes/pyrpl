@@ -194,8 +194,9 @@ integer i;
 genvar j;
 
 //select inputs
-generate for (j = 0; j < MODULES+EXTRAMODULES; j = j+1)
+generate for (j = 0; j < MODULES+EXTRAMODULES; j = j+1) begin
    assign input_signal[j] = (input_select[j]==NONE) ? 14'b0 : output_signal[input_select[j]];
+end
 endgenerate
 
 //sum together the direct outputs
@@ -244,7 +245,7 @@ red_pitaya_saturate #(
     ) dac_saturate [1:0] (
    .input_i({sum2,sum1}),
    .output_o({dat_b_o,dat_a_o}),
-   .overflow ({dat_b_saturated,dac_a_saturated})
+   .overflow ({dac_b_saturated,dac_a_saturated})
    );   
 
 //  System bus connection
@@ -305,7 +306,7 @@ end else begin
    casez (sys_addr[16-1:0])
       20'h00 : begin sys_ack <= sys_en;          sys_rdata <= {{32- LOG_MODULES{1'b0}},input_select[sys_addr[16+LOG_MODULES-1:16]]}; end 
 	  20'h04 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 2{1'b0}},output_select[sys_addr[16+LOG_MODULES-1:16]]}; end
-	  20'h08 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 2{1'b0}},dat_b_saturated,dac_a_saturated}; end
+	  20'h08 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 2{1'b0}},dac_b_saturated,dac_a_saturated}; end
 	  20'h0C : begin sys_ack <= sys_en;          sys_rdata <= {{32-MODULES{1'b0}},sync} ; end
       20'h10 : begin sys_ack <= sys_en;          sys_rdata <= {{32- 14{1'b0}},output_signal[sys_addr[16+LOG_MODULES-1:16]]} ; end
 

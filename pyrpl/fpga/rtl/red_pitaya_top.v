@@ -85,7 +85,7 @@ module red_pitaya_top #(
   parameter LUTBITS   = 17,
   parameter FGEN3_PHASEBITS = 32,
   parameter FGEN3_FM_MOD_BITS   = 17,
-  parameter DWE = 8, // data width for expansion connector
+  parameter DWE = 8 // data width for expansion connector
 )(
    // PS connections
    inout  [54-1: 0] FIXED_IO_mio       ,
@@ -420,7 +420,7 @@ red_pitaya_hk i_hk (
   .exp_n_dat_o     (  exp_n_out                  ),
   .exp_n_dir_o     (  exp_n_dir                  ),
 
-  .mod_exp_p_dat   ( {DWE-2{1'b0}, iq0_square, 1'b0}), // putting fm reference signal pin 1 of expansion connector
+  .mod_exp_p_dat   ( {{(DWE-6){1'b0}}, dac_pwm_o ,iq0_square, 1'b0}), // putting fm reference signal pin 1 of expansion connector
   .mod_exp_n_dat   ( {DWE-1{1'b0}}               ),
 
    // System bus

@@ -114,6 +114,15 @@ reg [ 32-1: 0] set_filter;   // filter setting
 // limits if arbitrary saturation is enabled
 reg signed [ 14-1:0] out_max;
 reg signed [ 14-1:0] out_min;
+wire signed [IBW-ISR-1: 0] int_shr   ;
+
+//formerly
+//-localparam IBW = 64; //integrator bit-width. Over-represent the integral sum to record longterm drifts
+//-reg   [15+GAINBITS-1: 0] ki_mult  ;
+localparam IBW = ISR+16; //integrator bit-width. Over-represent the integral sum to record longterm drifts (overrepresented by 2 bits)
+reg signed  [16+GAINBITS-1: 0] ki_mult ;
+wire signed [IBW  : 0] int_sum       ;
+reg signed  [IBW-1: 0] int_reg       ;
 
 //  System bus connection
 always @(posedge clk_i) begin
@@ -230,14 +239,7 @@ assign kp_mult = (pause_p==1'b1) ? $signed({15+GAINBITS{1'b0}}) : $signed(error)
 // Integrator - 2 cycles delay (but treat similar to proportional since it
 // will become negligible at high frequencies where delay is important)
 
-//formerly
-//-localparam IBW = 64; //integrator bit-width. Over-represent the integral sum to record longterm drifts
-//-reg   [15+GAINBITS-1: 0] ki_mult  ;
-localparam IBW = ISR+16; //integrator bit-width. Over-represent the integral sum to record longterm drifts (overrepresented by 2 bits)
-reg signed  [16+GAINBITS-1: 0] ki_mult ;
-wire signed [IBW  : 0] int_sum       ;
-reg signed  [IBW-1: 0] int_reg       ;
-wire signed [IBW-ISR-1: 0] int_shr   ;
+
 
 always @(posedge clk_i) begin
    if (rstn_i == 1'b0) begin

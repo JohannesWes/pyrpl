@@ -73,6 +73,12 @@ module red_pitaya_ams (
 );
 
 
+localparam CCW = 24; // configuration bitwidth for pwm module
+
+reg [24-1:0] cfg;
+reg [24-1:0] cfg_b;
+
+
 //---------------------------------------------------------------------------------
 //
 //  System bus connection
@@ -96,6 +102,7 @@ end else begin
    dac_a_o <= cfg;
    dac_b_o <= cfg_b;
    if (sys_wen) begin
+      // first two channels receive input from DSP, not from software/system bus
       // if (sys_addr[19:0]==16'h20)   dac_a_o <= sys_wdata[24-1: 0] ;
       // if (sys_addr[19:0]==16'h24)   dac_b_o <= sys_wdata[24-1: 0] ;
       if (sys_addr[19:0]==16'h28)   dac_c_o <= sys_wdata[24-1: 0] ;
@@ -176,9 +183,7 @@ end
 // its not clear at all if the timing will be right here since we work at 250 MHz in this module
 // if something doesnt work, parts of the logic must be transferred down to 125 MHz
 
-localparam CCW = 24; // configuration bitwidth for pwm module
 
-reg [24-1:0] cfg;
 wire bit3;
 wire bit2;
 wire bit1;
@@ -191,7 +196,6 @@ end else begin
    cfg  <= {~pwm0_i[13],pwm0_i[13-1:6],1'b0,bit3,bit2,bit3,bit1,bit3,bit2,bit3,bit0,bit3,bit2,bit3,bit1,bit3,bit2,bit3};
 end
 
-reg [24-1:0] cfg_b;
 wire bit3_b;
 wire bit2_b;
 wire bit1_b;
