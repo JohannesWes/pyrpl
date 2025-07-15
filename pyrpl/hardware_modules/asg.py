@@ -160,7 +160,10 @@ def make_asg(channel=0):
                            "frequency",
                            "trigger_source",
                            "output_direct",
-                           "start_phase"]
+                           "start_phase",
+                           "reset_phase",
+                           "reset_both_phases"
+                           ]
         _setup_attributes = _gui_attributes + ["cycles_per_burst"]
 
         _DATA_OFFSET = set_DATA_OFFSET
@@ -396,6 +399,20 @@ def make_asg(channel=0):
             self.advanced_trigger_reset = True
             self.trigger_source = 'immediately'
             self.sm_reset = True
+
+        def reset_phase(self):
+            """Resets the phase of the ASG."""
+            self.sm_reset = True
+            self.sm_reset = False
+
+        def reset_both_phases(self):
+            """Resets both phases of the ASG simultaneously."""
+            # reads current value of the combined control signal register
+            regval = self._read(0x0)
+            # sets the reset bits to 1 by adressing bits 6 and 22
+            self._write(0x0, regval | 0x400040)
+            # clear reset bits
+            self._write(0x0, regval)
 
     return Asg
 
