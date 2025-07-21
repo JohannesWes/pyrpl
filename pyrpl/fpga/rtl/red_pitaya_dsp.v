@@ -379,25 +379,25 @@ end
 endgenerate
 assign trig_o = trig_signal;
 
-//IIR module 
-generate for (j = 4; j < 5; j = j+1) begin
-    red_pitaya_iir_block iir (
-	     // data
-	     .clk_i        (  clk_i          ),  // clock
-	     .rstn_i       (  rstn_i         ),  // reset - active low
-	     .dat_i        (  input_signal [j] ),  // input data
-	     .dat_o        (  output_direct[j]),  // output data
+// //IIR module 
+// generate for (j = 4; j < 5; j = j+1) begin
+//     red_pitaya_iir_block iir (
+// 	     // data
+// 	     .clk_i        (  clk_i          ),  // clock
+// 	     .rstn_i       (  rstn_i         ),  // reset - active low
+// 	     .dat_i        (  input_signal [j] ),  // input data
+// 	     .dat_o        (  output_direct[j]),  // output data
 
-		 //communincation with PS
-		 .addr ( sys_addr[16-1:0] ),
-		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-		 .ack  ( module_ack[j] ),
-		 .rdata (module_rdata[j]),
-	     .wdata (sys_wdata)
-      );
-	  assign output_signal[j] = output_direct[j];
-end endgenerate
+// 		 //communincation with PS
+// 		 .addr ( sys_addr[16-1:0] ),
+// 		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+// 		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+// 		 .ack  ( module_ack[j] ),
+// 		 .rdata (module_rdata[j]),
+// 	     .wdata (sys_wdata)
+//       );
+// 	  assign output_signal[j] = output_direct[j];
+// end endgenerate
 
 
 // additional IQ wires

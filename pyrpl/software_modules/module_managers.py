@@ -51,7 +51,7 @@ starting from the end of the list) is returned by the module manager:
 import logging
 logger = logging.getLogger(name=__name__)
 from ..widgets.module_widgets import ModuleManagerWidget, AsgManagerWidget, Fgen3ManagerWidget, PidManagerWidget, IqManagerWidget, \
-    ScopeManagerWidget, IirManagerWidget, PwmManagerWidget
+    ScopeManagerWidget, ScanManagerWidget, IirManagerWidget, PwmManagerWidget
 from ..modules import Module
 
 
@@ -154,6 +154,10 @@ class Asgs(ModuleManager):
 
 class Fgen3s(ModuleManager):
     _widget_class = Fgen3ManagerWidget
+
+class Scans(ModuleManager):
+    # todo docstring
+    _widget_class = ScanManagerWidget
 
 class Pwms(ModuleManager):
     _widget_class = PwmManagerWidget

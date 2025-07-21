@@ -118,14 +118,59 @@ wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_msb;
 wire [BRAM_ADDR_BITS-1:0]   bram_rd_addr_in;        // Combinatorial BRAM address from sys_addr
 reg  [BRAM_ADDR_BITS-1:0]   bram_rd_addr_p1;        // Pipelined BRAM address stage 1
 reg  [BRAM_ADDR_BITS-1:0]   bram_rd_addr_p2;        // Pipelined BRAM address stage 2 (used for BRAM read)
-wire [BUS_DATA_WIDTH-1:0]   bram_rd_data_lsb_raw;   // Raw data output from LSB BRAM read
-wire [BUS_DATA_WIDTH-1:0]   bram_rd_data_msb_raw;   // Raw data output from MSB BRAM read
+
+reg  [BUS_DATA_WIDTH-1:0] bram_rd_data_lsb_raw;
+reg  [BUS_DATA_WIDTH-1:0] bram_rd_data_msb_raw;
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_lsb_reg;   // Registered BRAM data (after BRAM read latency)
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_msb_reg;   // Registered BRAM data (after BRAM read latency)
 
-// BRAM Read Acknowledge Delay Pipe (Scope Style)
-reg  [4-1:0]                bram_ack_delay_pipe;    // 4-stage pipeline for ack generation
-wire                        bram_read_ack_delayed;  // Delayed ack signal (output of pipe)
+
+//-----------------------------------------------------------------------------
+// BRAM Read Logic and System Bus Pipelining
+//-----------------------------------------------------------------------------
+// Reading from the BRAM is a multi-cycle operation due to the synchronous
+// nature of BRAMs and the need to meet timing constraints. A full read
+// transaction has a 4-cycle latency from request to acknowledge.
+//
+// The pipeline stages are as follows:
+//
+// Cycle 0: CPU asserts sys_ren & sys_addr.
+//   - Combinatorial logic detects a BRAM access (is_bram_access).
+//   - bram_rd_addr_in latches the address from the bus.
+//
+// Cycle 1:
+//   - sys_ren_p1, is_bram_access_p1, and bram_rd_addr_p1 are registered.
+//
+// Cycle 2:
+//   - sys_ren_p2, is_bram_access_p2, and bram_rd_addr_p2 are registered.
+//   - The BRAM read is initiated using the address from the p1 stage.
+//
+// Cycle 3:
+//   - is_bram_access_p3 is registered.
+//   - BRAM data is available and is latched into bram_rd_data_*_reg.
+//
+// Cycle 4:
+//   - The 4-stage bram_ack_delay_pipe asserts bram_read_ack_delayed.
+//   - sys_ack is asserted, and sys_rdata is driven with the registered data.
+//
+// The Python framework's _reads() method handles this delay automatically
+// by waiting for sys_ack.
+//-----------------------------------------------------------------------------
+always @(posedge clk) begin
+    if (sys_ren_p1 && is_bram_access_p1) begin  // Read on cycle p1
+        if (bram_access_lsb_p1) begin
+            bram_rd_data_lsb_raw <= ram_lsb[bram_rd_addr_p1];
+        end else if (bram_access_msb_p1) begin
+            bram_rd_data_msb_raw <= ram_msb[bram_rd_addr_p1];
+        end
+    end
+end
+
+
+
+// Adjust the pipeline stages and acknowledge delay
+reg  [4-1:0]  bram_ack_delay_pipe;    // Increase from 3 to 4 stages
+wire bram_read_ack_delayed;
 
 // Trigger logic
 reg                         trigger_pulse_active;
@@ -135,8 +180,8 @@ wire [19:0]                 reg_addr = sys_addr[19:0];
 wire                        sys_en = sys_wen || sys_ren;
 
 // BRAM Access Detection (combinatorial based on current sys_addr)
-wire                        bram_access_lsb = (reg_addr == BRAM_LSB_MAP_PATTERN); // Use == for exact pattern check
-wire                        bram_access_msb = (reg_addr == BRAM_MSB_MAP_PATTERN); // Use == for exact pattern check
+wire                        bram_access_lsb = (reg_addr[19:16] == 4'h1); // Check for address range 0x10000 - 0x1FFFF
+wire                        bram_access_msb = (reg_addr[19:16] == 4'h2); // Check for address range 0x20000 - 0x2FFFF
 wire                        is_bram_access = bram_access_lsb || bram_access_msb;
 
 // Pipelined BRAM Access Control Signals
@@ -154,7 +199,7 @@ always @(posedge clk) begin
         reg_num_steps          <= {MAX_STEPS_BITS{1'b0}};
         reg_dwell_time         <= 32'd125000; // Default 1ms
         reg_settling_time      <= 32'd12500;  // Default 0.1ms
-        reg_trigger_length     <= 32'd125;    // Default 1us
+        reg_trigger_length     <= 32'd6250;    // Default 50 us
         reg_trigger_pin_select <= {PIN_SELECT_BITS{1'b0}};
         reg_start_cmd          <= 1'b0;
         reg_stop_cmd           <= 1'b0;
@@ -218,9 +263,10 @@ end
 // State Machine Logic - Two Process Style
 //-----------------------------------------------------------------------------
 
-// Combinational next state logic - calculates what next_state should be
+// Combinational next state logic - calculates what next_state should be (Multiplexer)
 // State transition logic
 always @(*) begin
+    // Default assignment for next_state - if the sub-conditions for the state-transitions are not met yet, stay in the current state
     next_state = current_state;
     case (current_state)
         S_IDLE:         if (reg_start_cmd && reg_num_steps > 0) next_state = S_START_STEP;
@@ -284,39 +330,39 @@ always @(posedge clk) begin
               accum            <= {ACCUM_WIDTH{1'b0}};
          end
 
-// Increment logic based on current state
-case (current_state)
-    // Increment trigger counter until length reached
-    S_TRIGGERING:   if (trigger_counter < reg_trigger_length) trigger_counter <= trigger_counter + 1;
-    
-    // Increment settling counter until settling time reached
-    S_SETTLING:     if (settling_counter < reg_settling_time) settling_counter <= settling_counter + 1;
-    
-    S_ACQUIRING:    begin
-                        // Update current step register for readout
-                        reg_current_step <= step_counter;
-                        if (dwell_counter < reg_dwell_time) begin
-                            dwell_counter <= dwell_counter + 1;
-                            // Accumulate sign-extended input data
-                            accum <= accum + $signed({{(ACCUM_WIDTH-DATA_WIDTH){input_i[DATA_WIDTH-1]}}, input_i});
-                        end
-                    end
-    
-    // Increment step counter after storing
-    S_FINISHING:    step_counter <= step_counter + 1;
-    
-    default: ; // No counter updates in other states
-endcase
+        // Increment logic based on current state
+        case (current_state)
+            // Increment trigger counter until length reached
+            S_TRIGGERING:   if (trigger_counter < reg_trigger_length) trigger_counter <= trigger_counter + 1;
+            
+            // Increment settling counter until settling time reached
+            S_SETTLING:     if (settling_counter < reg_settling_time) settling_counter <= settling_counter + 1;
+            
+            S_ACQUIRING:    begin
+                                // Update current step register for readout
+                                reg_current_step <= step_counter;
+                                if (dwell_counter < reg_dwell_time) begin
+                                    dwell_counter <= dwell_counter + 1;
+                                    // Accumulate sign-extended input data
+                                    accum <= accum + $signed({{(ACCUM_WIDTH-DATA_WIDTH){input_i[DATA_WIDTH-1]}}, input_i});
+                                end
+                            end
+            
+            // Increment step counter after storing
+            S_FINISHING:    step_counter <= step_counter + 1;
+            
+            default: ; // No counter updates in other states
+        endcase
 
-         // Handle external reset/stop
-         if (reg_reset_cmd || reg_stop_cmd) begin
-              step_counter     <= {MAX_STEPS_BITS{1'b0}};
-              trigger_counter  <= 32'b0;
-              settling_counter <= 32'b0;
-              dwell_counter    <= 32'b0;
-              accum            <= {ACCUM_WIDTH{1'b0}};
-              reg_current_step <= {MAX_STEPS_BITS{1'b0}};
-         end
+        // Handle external reset/stop
+        if (reg_reset_cmd || reg_stop_cmd) begin
+            step_counter     <= {MAX_STEPS_BITS{1'b0}};
+            trigger_counter  <= 32'b0;
+            settling_counter <= 32'b0;
+            dwell_counter    <= 32'b0;
+            accum            <= {ACCUM_WIDTH{1'b0}};
+            reg_current_step <= {MAX_STEPS_BITS{1'b0}};
+        end
     end
 end
 
@@ -381,8 +427,8 @@ end
 
 // BRAM Read - data appears on the cycle AFTER the address is presented
 // Note: Actual BRAM might behave slightly differently, but this models typical synchronous read
-assign bram_rd_data_lsb_raw = ram_lsb[bram_rd_addr_p2]; // Combinatorial read based on p2 address
-assign bram_rd_data_msb_raw = ram_msb[bram_rd_addr_p2];
+// assign bram_rd_data_lsb_raw = ram_lsb[bram_rd_addr_p2]; // Combinatorial read based on p2 address
+// assign bram_rd_data_msb_raw = ram_msb[bram_rd_addr_p2];
 
 always @(posedge clk) begin
     if (sys_ren_p2) begin // Use delayed ren to enable data capture
@@ -435,15 +481,15 @@ assign bram_read_ack_delayed = bram_ack_delay_pipe[3];
 //-----------------------------------------------------------------------------
 // System Bus Interface Logic
 //-----------------------------------------------------------------------------
-assign sys_err = 1'b0; // No error conditions implemented
-
 always @(posedge clk) begin
     if (!rstn) begin
         sys_ack <= 1'b0;
         sys_rdata <= 32'h0;
+        sys_err <= 1'b0;
     end else begin
         // Default assignments (will be overridden below if conditions match)
         sys_ack <= 1'b0;
+        sys_err <= 1'b0;
         sys_rdata <= 32'h0; // Default to 0 if no valid read target
 
         // Handle Register Accesses (Immediate Ack, Registered Data)
@@ -485,5 +531,10 @@ always @(posedge clk) begin
         end
     end
 end
+
+// Add debug signals to check BRAM writes
+(* mark_debug = "true" *) wire bram_write_valid = (current_state == S_STORING_REQ);
+(* mark_debug = "true" *) wire [11:0] bram_write_addr = step_counter;
+(* mark_debug = "true" *) wire [31:0] bram_write_data_lsb = accum[31:0];
 
 endmodule

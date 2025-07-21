@@ -772,6 +772,7 @@ class HardwareModule(Module):
     def _writes(self, addr, values):
         self._client.writes(self._addr_base + addr, values)
 
+    # inconsistent that here the full address is needed, whereas _reads takes addr relative to add_base ...
     def _read(self, addr):
         return int(self._reads(addr, 1)[0])
 

@@ -30,10 +30,11 @@ import numpy as np
 import logging
 
 from ..modules import HardwareModule
+from ..widgets.module_widgets.scan_widget import ScanWidget
 from ..attributes import (IntRegister, FloatProperty, BoolRegister,
                           SelectRegister, BaseRegister)
 # from ..dsp import InputSelectRegister # Cannot use this due to FPGA limitation
-from ..pyrpl_utils import time, sleep
+# from ..pyrpl_utils import time
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,8 @@ ADDR_TRIGGER_LENGTH = 0x10
 ADDR_TRIGGER_PIN_SEL = 0x14
 ADDR_CURRENT_STEP = 0x18
 # ADDR_INPUT_SELECT = 0x20 # Not implemented in scan_new.v
-BRAM_BASE_ADDR = 0x10000
+BRAM_LSB_BASE_ADDR = 0x10000 # As per Verilog: Module Base + 0x10000
+BRAM_MSB_BASE_ADDR = 0x20000 # As per Verilog: Module Base + 0x20000
 
 # Control Register Bits
 CONTROL_START_BIT = 0
@@ -102,20 +104,17 @@ class CyclesProperty(FloatProperty):
         return self.to_python(instance, cycles)
 
     def __set__(self, instance, value_s):
-        cycles = self.from_python(instance, value_s)
-        # Ensure value is within min/max *after* conversion
-        validated_value_s = max(min(value_s, self.max), self.min)
+        # validate and clamp the user-provided float value.
+        validated_value_s = self.validate_and_normalize(instance, value_s)  # Uses parent clamping
         if value_s != validated_value_s:
-             logger.warning("%s: Requested value %f s out of bounds [%f, %f]. Clamping to %f s.",
-                            self.name, value_s, self.min, self.max, validated_value_s)
-             value_s = validated_value_s
-             cycles = self.from_python(instance, value_s) # Recalculate cycles
+            logger.warning("%s: Requested value %f s is out of bounds [%f, %f]. Clamping to %f s.",
+                           self.name, value_s, self.min, self.max, validated_value_s)
 
+        # convert the validated value to clock cycles.
+        cycles = self.from_python(instance, validated_value_s)
+
+        # set the value of the underlying IntRegister - automatically updates value on FPGA
         setattr(instance, f"_{self.name}_cycles", cycles)
-        # Manually trigger update mechanisms for the underlying IntRegister attribute
-        # This assumes the IntRegister attribute name follows the pattern "_<name>_cycles"
-        int_reg_attr = getattr(instance.__class__, f"_{self.name}_cycles")
-        int_reg_attr.value_updated(instance, cycles)
 
 
 class Scan(HardwareModule):
@@ -125,6 +124,7 @@ class Scan(HardwareModule):
     Performs automated sweeps, triggering an external device and accumulating
     input data at each step.
     """
+    _widget_class = ScanWidget
     addr_base = 0x40500000 # Corresponds to system bus port 5
     name = 'scan'
     #_widget_class = ScanWidget # TODO: Create a widget later if needed
@@ -164,7 +164,7 @@ class Scan(HardwareModule):
     _trigger_length_cycles = IntRegister(ADDR_TRIGGER_LENGTH, bits=32, min=0,
                                          doc="Internal: Duration of the trigger pulse [cycles].")
 
-    # Trigger Pin Selection - Remember the limitation!
+    # Trigger Pin Selection
     _trigger_pin_options = {f"DOUT{i}": i for i in range(8)} # Map names to values 0-7
     trigger_pin_select = SelectRegister(ADDR_TRIGGER_PIN_SEL, options=_trigger_pin_options,
                                         default="DOUT7", # Default matches FPGA hardwiring
@@ -179,7 +179,14 @@ class Scan(HardwareModule):
 
     # --- Control Methods ---
     def _write_control_bit(self, bit_position, value):
-        """Helper to write a single bit to the control register."""
+        """
+        Write a self-clearing command bit to the control register.
+
+        The control register (0x00000) uses a dual-function pattern where writes
+        trigger one-cycle command pulses (start/stop/reset) that auto-clear, while
+        reads return status flags (busy/done). This requires special handling since
+        standard IntRegister assumes persistent read/write values.
+        """
         if value:
             control_val = 1 << bit_position
         else:
@@ -217,11 +224,11 @@ class Scan(HardwareModule):
         logger.info("Resetting scan module...")
         self._write_control_bit(CONTROL_RESET_BIT, True)
         # Give FPGA time to process reset
-        sleep(0.01)
+        time.sleep(0.01)
 
 
     # --- Data Retrieval ---
-    def wait_done(self, timeout=10.0, poll_interval=0.05):
+    def wait_done(self, timeout=10.0, poll_interval=0.1):
         """
         Waits until the sweep is finished or timeout occurs.
 
@@ -240,13 +247,16 @@ class Scan(HardwareModule):
             if time.time() - start_time > timeout:
                 logger.error("Timeout waiting for scan sweep to finish.")
                 return False
-            sleep(poll_interval)
+            time.sleep(poll_interval)
         logger.info("Scan sweep finished.")
         return True
 
     def get_data(self, average=True):
         """
         Reads the accumulated data from the FPGA BRAM after a sweep.
+
+        This method uses two efficient block-reads to retrieve the LSB and MSB
+        data banks separately.
 
         Args:
             average (bool): If True (default), divides the accumulated sums
@@ -258,7 +268,8 @@ class Scan(HardwareModule):
                         The dtype is float64 if average=True, otherwise int64.
 
         Raises:
-            RuntimeError: If the sweep is still busy or hasn't finished correctly.
+            RuntimeError: If the sweep is still busy, hasn't finished correctly,
+                          or if there is a data readout error.
         """
         if self.busy:
             raise RuntimeError("Scan module is busy. Cannot read data.")
@@ -283,38 +294,28 @@ class Scan(HardwareModule):
                          "Returning raw accumulated data.")
             average = False # Force return of raw data
 
-        logger.info(f"Reading {n_steps} data points from FPGA BRAM...")
+        logger.info(f"Reading {n_steps} data points from FPGA BRAM using block reads...")
 
-        data_accum = np.zeros(n_steps, dtype=np.int64)
+        try:
+            # The _reads method in the parent HardwareModule automatically adds the
+            # module's base address (self.addr_base). Thus only provide relative offset here.
+            lsb_data = self._reads(BRAM_LSB_BASE_ADDR, n_steps)
+            msb_data = self._reads(BRAM_MSB_BASE_ADDR, n_steps)
 
-        # Calculate base addresses for LSB and MSB reads
-        # BRAM address is word-aligned (32-bit), so offset is 4 bytes.
-        # LSB is at BRAM_BASE + step*8, MSB is at BRAM_BASE + step*8 + 4
-        bram_lsb_start_addr = self.addr_base + BRAM_BASE_ADDR
-        bram_msb_start_addr = self.addr_base + BRAM_BASE_ADDR + 4
+            # --- Validation of received data ---
+            if lsb_data is None or len(lsb_data) != n_steps:
+                raise RuntimeError(f"Block read from LSB BRAM failed or returned incorrect length. "
+                                   f"Expected {n_steps}, got {len(lsb_data) if lsb_data is not None else 'None'}.")
+            if msb_data is None or len(msb_data) != n_steps:
+                raise RuntimeError(f"Block read from MSB BRAM failed or returned incorrect length. "
+                                   f"Expected {n_steps}, got {len(msb_data) if msb_data is not None else 'None'}.")
 
-        # Read data step by step
-        # TODO: Implement block read (_reads) if possible/faster,
-        #       but the LSB/MSB interleaving makes it tricky.
-        #       Sticking to single reads (_read) for now.
-        for i in range(n_steps):
-            addr_lsb = bram_lsb_start_addr + i * 8
-            addr_msb = bram_msb_start_addr + i * 8
+            # --- Combine LSB and MSB into a 64-bit integer array ---
+            data_accum = (msb_data.astype(np.int64) << 32) | lsb_data.astype(np.int64)
 
-            try:
-                lsb = np.uint32(self._read(addr_lsb))
-                msb = np.uint32(self._read(addr_msb))
-
-                # Combine LSB and MSB into int64
-                # Shift MSB by 32 bits and OR with LSB (casted to int64 first)
-                data_accum[i] = (np.int64(msb) << 32) | np.int64(lsb)
-
-            except Exception as e:
-                logger.error(f"Error reading BRAM at step {i} (addrs "
-                             f"0x{addr_lsb:X}, 0x{addr_msb:X}): {e}")
-                # Optionally fill with NaN or raise error fully
-                data_accum[i] = 0 # Or np.nan if float return type allowed
-                # raise # Reraise the exception
+        except Exception as e:
+            logger.error(f"Error during block read from BRAM: {e}")
+            raise RuntimeError(f"Failed to read data from BRAM. Original error: {e}")
 
         logger.info("Data readout complete.")
 
@@ -384,15 +385,3 @@ class Scan(HardwareModule):
             # Attempt to stop it cleanly
             self.stop()
             return None
-
-# --- Integration into RedPitaya class ---
-# This part needs to be added *manually* to `pyrpl/redpitaya.py`
-
-# 1. Import the Scan module at the top of redpitaya.py:
-# from .hardware_modules.scan import Scan # Adjust path if needed
-
-# 2. Add Scan to the RedPitaya.cls_modules list:
-#    (Inside the RedPitaya class definition)
-#    cls_modules = [rp.HK, rp.AMS, rp.Scope, rp.Sampler, rp.Asg0, rp.Asg1] + \
-#                  [rp.Pwm] * 2 + [rp.Iq] * 3  + [rp.Trig] + [rp.IIR] + \
-#                  [Scan] # Add Scan here

@@ -54,6 +54,9 @@ class AsgManagerWidget(ModuleManagerWidget):
 class Fgen3ManagerWidget(ModuleManagerWidget):
     pass
 
+class ScanManagerWidget(ModuleManagerWidget):
+    pass
+
 class ScopeManagerWidget(ModuleManagerWidget):
     add_stretch = False # Scope should expand maximally
 

@@ -255,9 +255,9 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 
 // unused system bus slave ports
 
-assign sys_rdata[5*32+:32] = 32'h0; 
-assign sys_err  [5       ] =  1'b0;
-assign sys_ack  [5       ] =  1'b1;
+// assign sys_rdata[5*32+:32] = 32'h0; 
+// assign sys_err  [5       ] =  1'b0;
+// assign sys_ack  [5       ] =  1'b1;
 
 assign sys_rdata[7*32+:32] = 32'h0; 
 assign sys_err  [7       ] =  1'b0;
@@ -306,6 +306,7 @@ wire  signed [14-1:0] fgen3_dac_b;
 wire                  fgen3_output_to_dsp_enable;
 
 wire                  iq0_square;
+wire                  scan_trigger_o;
 
 // Signals to DSP
 wire  signed [14-1:0] dsp_asg1_input;
@@ -420,7 +421,7 @@ red_pitaya_hk i_hk (
   .exp_n_dat_o     (  exp_n_out                  ),
   .exp_n_dir_o     (  exp_n_dir                  ),
 
-  .mod_exp_p_dat   ( {{(DWE-6){1'b0}}, dac_pwm_o ,iq0_square, 1'b0}), // putting fm reference signal pin 1 of expansion connector
+  .mod_exp_p_dat   ( {scan_trigger_o, 1'b0, dac_pwm_o ,iq0_square, 1'b0}),
   .mod_exp_n_dat   ( {DWE-1{1'b0}}               ),
 
    // System bus
@@ -645,6 +646,35 @@ generate
         );
     end
 endgenerate
+
+
+//---------------------------------------------------------------------------------
+//  Scan Module
+
+scan #(
+    .MAX_STEPS_BITS (12),
+    .DATA_WIDTH     (14)
+) i_scan (
+    // System Clock and Reset
+    .clk           (adc_clk),
+    .rstn          (adc_rstn),
+
+    // Data Input (Hardwired to adc_a currently)
+    .input_i       (adc_a),
+
+    // Trigger Output
+    .trigger_o     (scan_trigger_o),
+
+    // System Bus Interface (Port 5)
+    .sys_addr      (sys_addr),
+    .sys_wdata     (sys_wdata),
+    .sys_sel       (sys_sel),
+    .sys_wen       (sys_wen[5]),
+    .sys_ren       (sys_ren[5]),
+    .sys_rdata     (sys_rdata[5*32+31 : 5*32]),
+    .sys_err       (sys_err[5]),
+    .sys_ack       (sys_ack[5])
+);
 
 //---------------------------------------------------------------------------------
 //  3FGEN module
