@@ -53,6 +53,10 @@ reg [DWE-1:0] sys_exp_p_dir;
 reg [DWE-1:0] sys_exp_n_dat;
 reg [DWE-1:0] sys_exp_n_dir;
 
+// Inversion control registers (1=invert output, 0=normal)
+reg [DWE-1:0] exp_p_inv_sel;  // Inversion select for P expansion
+reg [DWE-1:0] exp_n_inv_sel;  // Inversion select for N expansion
+
 // Source selection registers (0=system bus, 1=module input)
 reg [DWE-1:0] exp_p_src_sel;  // Source select for P expansion
 reg [DWE-1:0] exp_n_src_sel;  // Source select for N expansion
@@ -113,6 +117,9 @@ assign id_value[ 3: 0] =  4'h1; // board type   1 - release 1
 
 integer i;
 
+reg [DWE-1:0] exp_p_dat_mux;
+reg [DWE-1:0] exp_n_dat_mux;
+
 always @(posedge clk_i) begin
   if (rstn_i == 1'b0) begin
     exp_p_dat_o <= {DWE{1'b0}};
@@ -122,13 +129,21 @@ always @(posedge clk_i) begin
   end else begin
     // Multiplexing for P expansion
     for (i = 0; i < DWE; i = i + 1) begin
-      exp_p_dat_o[i] <= exp_p_src_sel[i] ? mod_exp_p_dat[i] : sys_exp_p_dat[i];
+      // select the data source
+      exp_p_dat_mux[i] = exp_p_src_sel[i] ? mod_exp_p_dat[i] : sys_exp_p_dat[i];
+      // apply inversion if enabled
+      exp_p_dat_o[i] <= exp_p_inv_sel[i] ? ~exp_p_dat_mux[i] : exp_p_dat_mux[i];
+
       exp_p_dir_o[i] <= exp_p_src_sel[i] ? 1'b1 : sys_exp_p_dir[i]; // Module data is always output, not input
     end
     
     // Multiplexing for N expansion
     for (i = 0; i < DWE; i = i + 1) begin
-      exp_n_dat_o[i] <= exp_n_src_sel[i] ? mod_exp_n_dat[i] : sys_exp_n_dat[i];
+      // select the data source
+      exp_n_dat_mux[i] = exp_n_src_sel[i] ? mod_exp_n_dat[i] : sys_exp_n_dat[i];
+      // apply inversion if enabled
+      exp_n_dat_o[i] <= exp_n_inv_sel[i] ? ~exp_n_dat_mux[i] : exp_n_dat_mux[i];
+
       exp_n_dir_o[i] <= exp_n_src_sel[i] ? 1'b1 : sys_exp_n_dir[i]; // Module data is always output, not input
     end
   end
@@ -148,6 +163,9 @@ if (rstn_i == 1'b0) begin
   sys_exp_n_dir    <= {DWE{1'b0}};
   exp_p_src_sel    <= {DWE{1'b0}};
   exp_n_src_sel    <= {DWE{1'b0}};
+  exp_p_inv_sel    <= {DWE{1'b0}};
+  exp_n_inv_sel    <= {DWE{1'b0}};
+
 end else begin
   // Handle system bus writes
   if (sys_wen) begin
@@ -165,6 +183,9 @@ end else begin
       // Source selection (0=system, 1=module)
       20'h40: exp_p_src_sel <= sys_wdata[DWE-1:0];
       20'h44: exp_n_src_sel <= sys_wdata[DWE-1:0];
+
+      20'h50: exp_p_inv_sel <= sys_wdata[DWE-1:0];
+      20'h54: exp_n_inv_sel <= sys_wdata[DWE-1:0];
       
       // LED control
       20'h30: led_o         <= sys_wdata[DWL-1:0];
@@ -216,6 +237,9 @@ end else begin
     // Current output values (after mux)
     20'h00048: sys_rdata <= {{32-DWE{1'b0}}, exp_p_dat_o};
     20'h0004C: sys_rdata <= {{32-DWE{1'b0}}, exp_n_dat_o};
+
+    20'h00050: sys_rdata <= {{32-DWE{1'b0}}, exp_p_inv_sel};
+    20'h00054: sys_rdata <= {{32-DWE{1'b0}}, exp_n_inv_sel};
     
     default: sys_rdata <= 32'h0;
   endcase

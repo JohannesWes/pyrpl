@@ -12,6 +12,14 @@ class ExpansionDirection(BoolProperty):
     def get_value(self, obj):
         return obj._get_expansion_direction(self.name.strip('_output'))
 
+class InvertSelect(BoolProperty):
+    """Property for controlling pin output inversion"""
+
+    def set_value(self, obj, val):
+        obj._set_invert_select(self.name.strip('_inv'), val)
+
+    def get_value(self, obj):
+        return obj._get_invert_select(self.name.strip('_inv'))
 
 class SourceSelect(BoolProperty):
     """Property for controlling pin source (system bus vs external module input)"""
@@ -37,9 +45,11 @@ class HK(HardwareModule):
                         ['expansion_P' + str(i) for i in range(8)] + \
                         ['expansion_P' + str(i) + '_output' for i in range(8)] + \
                         ['expansion_P' + str(i) + '_src' for i in range(8)] + \
+                        ['expansion_P' + str(i) + '_inv' for i in range(8)] + \
                         ['expansion_N' + str(i) for i in range(8)] + \
                         ['expansion_N' + str(i) + '_output' for i in range(8)] + \
-                        ['expansion_N' + str(i) + '_src' for i in range(8)]
+                        ['expansion_N' + str(i) + '_src' for i in range(8)] + \
+                        ['expansion_N' + str(i) + '_inv' for i in range(8)]
 
     _gui_attributes = _setup_attributes
     addr_base = 0x40000000
@@ -65,6 +75,8 @@ class HK(HardwareModule):
             doc=f"Direction of positive expansion pin {i} (True=output, False=input)")
         locals()['expansion_P' + str(i) + '_src'] = SourceSelect(
             doc=f"Source select for positive expansion pin {i} (True=module, False=system)")
+        locals()['expansion_P' + str(i) + '_inv'] = InvertSelect(
+            doc=f"Invert output for positive expansion pin {i} (True=inverted, False=normal)")
 
         # N expansion
         locals()['expansion_N' + str(i)] = IORegister(0x24, 0x1C, 0x14, bit=i,
@@ -76,6 +88,9 @@ class HK(HardwareModule):
         locals()['expansion_N' + str(i) + '_src'] = SourceSelect(
             doc=f"Source select for negative expansion pin {i} (True=module, False=system)"
         )
+        locals()['expansion_N' + str(i) + '_inv'] = InvertSelect(
+            doc=f"Invert output for negative expansion pin {i} (True=inverted, False=normal)"
+        )
 
     # Source selection registers (full byte access)
     _p_source_select = IntRegister(0x40, doc="P expansion source select (bit per pin)", min=0, max=255)
@@ -84,6 +99,9 @@ class HK(HardwareModule):
     # Current output values (read-only, shows values after mux)
     _p_current_output = IntRegister(0x48, doc="Current P expansion output values")
     _n_current_output = IntRegister(0x4C, doc="Current N expansion output values")
+
+    _p_invert_select = IntRegister(0x50, doc="P expansion invert select (bit per pin)", min=0, max=255)
+    _n_invert_select = IntRegister(0x54, doc="N expansion invert select (bit per pin)", min=0, max=255)
 
     def _setup(self): # the function is here for its docstring to be used by the metaclass.
         """
@@ -144,10 +162,51 @@ class HK(HardwareModule):
         else :
             raise ValueError(f"Invalid pin type in name: {name}. Expected 'P' or 'N'.")
 
+    def _set_invert_select(self, name, val):
+        """Set inversion for a single pin"""
+        # Extract pin info from name (e.g., "expansion_P3" -> type="P", index=3)
+        parts = name.split('_')
+        exp_type = parts[1][0]  # 'P' or 'N'
+        index = int(parts[1][1:])  # pin number
 
-    def configure_pin(self, pin_name, direction='output', source='system'):
+        # Get current register value
+        if exp_type == 'P':
+            current = self._p_invert_select
+        else:
+            current = self._n_invert_select
+
+        # Set or clear the bit
+        if val:
+            new_value = current | (1 << index)
+        else:
+            new_value = current & ~(1 << index)
+
+        # Write back
+        if exp_type == 'P':
+            self._p_invert_select = new_value
+        elif exp_type == 'N':
+            self._n_invert_select = new_value
+        else:
+            raise ValueError(f"Invalid pin type in name: {name}. Expected 'P' or 'N'.")
+
+    def _get_invert_select(self, name):
+        """Get inversion setting for a single pin"""
+        # Extract pin info from name
+        parts = name.split('_')
+        exp_type = parts[1][0]  # 'P' or 'N'
+        index = int(parts[1][1:])  # pin number
+
+        # Read register and extract bit
+        if exp_type == 'P':
+            return bool((self._p_invert_select >> index) & 1)
+        elif exp_type == 'N':
+            return bool((self._n_invert_select >> index) & 1)
+        else:
+            raise ValueError(f"Invalid pin type in name: {name}. Expected 'P' or 'N'.")
+
+    def configure_pin(self, pin_name, direction='output', source='system', invert=False):
         """
-        Configure a single pin's direction and source.
+        Configure a single pin's direction, source, and inversion.
 
         Parameters
         ----------
@@ -157,10 +216,12 @@ class HK(HardwareModule):
             'input' or 'output'
         source : str
             'system' or 'module'
+        invert : bool
+            True to invert the output, False for normal operation
 
         Example
         -------
-        >>> hk.configure_pin('P0', direction='output', source='module')
+        >>> hk.configure_pin('P0', direction='output', source='module', invert=True)
         >>> hk.configure_pin('N3', direction='input')
         """
         # Normalize pin name
@@ -179,3 +240,8 @@ class HK(HardwareModule):
         src_attr = pin_name + '_src'
         if hasattr(self, src_attr):
             setattr(self, src_attr, source == 'module')
+
+        # Set inversion
+        inv_attr = pin_name + '_inv'
+        if hasattr(self, inv_attr):
+            setattr(self, inv_attr, invert)
