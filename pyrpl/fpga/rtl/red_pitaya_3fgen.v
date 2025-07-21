@@ -5,7 +5,6 @@
  * Generates a sum of three independently controlled sine waves, on two output
  * channels, with possible frequency modulation and phase offsets for all signals.
  * Uses memory-efficient quarter-sine LUTs.
- */
 */
 
 
