@@ -205,6 +205,11 @@ class Scan(HardwareModule):
         if self.busy:
             logger.warning("Scan module is already busy. Ignoring start command.")
             return
+
+        # If we're in DONE state, reset first to ensure clean start
+        if self.done:
+            self.reset()
+
         self._check_overflow()
         logger.info("Starting scan sweep...")
         self._write_control_bit(CONTROL_START_BIT, True)
