@@ -268,16 +268,20 @@ end
 always @(*) begin
     // Default assignment for next_state - if the sub-conditions for the state-transitions are not met yet, stay in the current state
     next_state = current_state;
+    
     case (current_state)
         S_IDLE:         if (reg_start_cmd && reg_num_steps > 0) next_state = S_START_STEP;
         
         S_START_STEP:   next_state = S_TRIGGERING;
         
-        S_TRIGGERING:   if (trigger_counter >= reg_trigger_length) next_state = S_SETTLING;
+        S_TRIGGERING:   if (reg_trigger_length == 0) next_state = S_SETTLING;
+                        else if (trigger_counter >= reg_trigger_length - 1) next_state = S_SETTLING;
         
-        S_SETTLING:     if (settling_counter >= reg_settling_time) next_state = S_ACQUIRING;
+        S_SETTLING:     if (reg_settling_time == 0) next_state = S_ACQUIRING;
+                        else if (settling_counter >= reg_settling_time - 1) next_state = S_ACQUIRING;
         
-        S_ACQUIRING:    if (dwell_counter >= reg_dwell_time) next_state = S_STORING_REQ;
+        S_ACQUIRING:    if (reg_dwell_time == 0) next_state = S_STORING_REQ;
+                        else if (dwell_counter >= reg_dwell_time - 1) next_state = S_STORING_REQ;
         
         // Always wait one cycle for write
         S_STORING_REQ:  next_state = S_STORING_WAIT;
