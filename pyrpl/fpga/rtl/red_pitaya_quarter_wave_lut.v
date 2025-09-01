@@ -96,9 +96,9 @@ assign wwphase_a = phase_a_in;
 assign wwphase_b = phase_b_in;
 assign wphase_a = wwphase_a[PHASEBITS-2-1:PHASEBITS-2-LUTSZ];
 assign wphase_b = wwphase_b[PHASEBITS-2-1:PHASEBITS-2-LUTSZ];
-assign invertphase_a  = wwphase_a[PHASEBITS-1-1];
+assign invertphase_a  = wwphase_a[PHASEBITS-1-1]; // To check the LUT output should be inverted or not
 assign invertphase_b  = wwphase_b[PHASEBITS-1-1];
-assign invertsignal_a = wwphase_a[PHASEBITS-1];
+assign invertsignal_a = wwphase_a[PHASEBITS-1]; // To check the signal inverted in sign or not
 assign invertsignal_b = wwphase_b[PHASEBITS-1];
 
 

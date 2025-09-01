@@ -284,7 +284,7 @@ red_pitaya_filter_block #(
    .dat_o  ( {quadrature1,quadrature2}  )
   );
 
-//modulation, summing and direct output
+//modulation, summing and direct output - Not required now.
 red_pitaya_iq_modulator_block #(
         .INBITS   (LPFBITS),
         .OUTBITS  (SIGNALBITS),

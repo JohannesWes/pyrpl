@@ -59,7 +59,7 @@ module red_pitaya_iq_demodulator_block #(
     input clk_i,
     input signed  [SINBITS-1:0] sin, 
     input signed  [SINBITS-1:0] cos, 
-    input signed  [INBITS-1:0]  signal_i,
+    input signed  [INBITS-1:0]  signal_i, // input signal to demodulate (From the ADC(photo detector))
     output signed [OUTBITS-1:0] signal1_o,            
     output signed [OUTBITS-1:0] signal2_o            
 );
