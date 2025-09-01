@@ -194,7 +194,7 @@ wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
      .STAGES(INPUTFILTERSTAGES),
      .SHIFTBITS(INPUTFILTERSHIFTBITS),
-     .SIGNALBITS(14),
+     .SIGNALBITS(24),
      .MINBW(INPUTFILTERMINBW)
   )
   inputfilter
