@@ -61,6 +61,7 @@ module red_pitaya_iq_block #(
    output     [ 14-1: 0] dat_o           ,  // output data
    output     [ 14-1: 0] signal_o        ,  // output data
    output     [ 14-1: 0] signal2_o       ,  // output data 2 (orthogonal quadrature)
+   output signed [ 24-1: 0] inphase_iq_demod,  // in-phase IQ output
 
    output     [PHASEBITS-1: 0] iq_phase_o      ,  // phase output
    output signed [LUTBITS-1:0] sin_out,
@@ -283,6 +284,8 @@ red_pitaya_filter_block #(
    .dat_i  ( {quadrature1_hf,quadrature2_hf}  ),
    .dat_o  ( {quadrature1,quadrature2}  )
   );
+
+  assign inphase_iq_demod = quadrature1;
 
 //modulation, summing and direct output - Not required now.
 red_pitaya_iq_modulator_block #(

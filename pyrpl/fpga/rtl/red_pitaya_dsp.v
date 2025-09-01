@@ -89,6 +89,8 @@ module red_pitaya_dsp #(
    output     [PHASEBITS-1:0] iq1_phase_o,
    output     [PHASEBITS-1:0] iq2_phase_o,
 
+   output signed [24-1:0] inphase_iq_demod_o,
+
    // system bus
    input      [ 32-1: 0] sys_addr        ,  //!< bus address
    input      [ 32-1: 0] sys_wdata       ,  //!< bus write data
@@ -403,6 +405,7 @@ assign trig_o = trig_signal;
 // additional IQ wires
 wire [PHASEBITS-1:0] iq_phase [7:0];
 wire signed [LUTBITS-1:0]   iq_sin [7:0];
+wire signed [24-1:0] inphase_iq_demod;
 
 //IQ modules
 generate for (j = 5; j < 7; j = j+1) begin
@@ -448,6 +451,7 @@ generate for (j = 7; j < 8; j = j+1) begin
        .signal2_o    (  output_signal[j*2]), // output signal 2
        .iq_phase_o   (  iq_phase[j]    ),   // new phase output
        .sin_out      (  iq_sin[j]  ),
+       .inphase_iq_demod(inphase_iq_demod),
 
        // communication with PS
        .addr  ( sys_addr[16-1:0] ),
@@ -466,5 +470,7 @@ assign iq2_phase_o = iq_phase[7];
 assign iq0_sin_o = iq_sin[5];
 assign iq1_sin_o = iq_sin[6];
 assign iq2_sin_o = iq_sin[7];
+
+assign inphase_iq_demod_o = inphase_iq_demod;
 
 endmodule

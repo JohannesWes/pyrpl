@@ -532,6 +532,8 @@ red_pitaya_asg i_asg (
 //---------------------------------------------------------------------------------
 //  DSP module
 
+wire signed [24-1:0] inphase_iq_demod;
+
 red_pitaya_dsp i_dsp (
    // signals
   .clk_i           (  adc_clk                    ),  // clock
@@ -562,6 +564,8 @@ red_pitaya_dsp i_dsp (
   .iq1_sin_o       (  iq1_sin                    ),
   .iq2_sin_o       (  iq2_sin                    ),
 
+  .inphase_iq_demod_o (inphase_iq_demod),
+
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
   .sys_wdata       (  sys_wdata                  ),  // write data
@@ -572,8 +576,8 @@ red_pitaya_dsp i_dsp (
   .sys_err         (  sys_err[3]                 ),  // error indicator
   .sys_ack         (  sys_ack[3]                 )   // acknowledge signal
 );
-
-assign iq0_square = iq0_sin[LUTBITS-1]; // serves as square-wave reference for external lock-in amplifier
+// Currently not used
+// assign iq0_square = iq0_sin[LUTBITS-1]; // serves as square-wave reference for external lock-in amplifier
 
 // the ams module has been obsoleted by PWM control via DSP module (outputs)
 // and by the fact that RedPitaya has migrated aux. inputs to be PS controlled
@@ -653,14 +657,14 @@ endgenerate
 
 scan #(
     .MAX_STEPS_BITS (12),
-    .DATA_WIDTH     (14)
+    .DATA_WIDTH     (24)
 ) i_scan (
     // System Clock and Reset
     .clk           (adc_clk),
     .rstn          (adc_rstn),
 
     // Data Input (Hardwired to adc_a currently)
-    .input_i       (adc_a),
+    .input_i       (inphase_iq_demod),
 
     // Trigger Output
     .trigger_o     (scan_trigger_o),
