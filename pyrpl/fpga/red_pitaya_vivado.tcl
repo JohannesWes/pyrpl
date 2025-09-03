@@ -47,8 +47,8 @@ generate_target all [get_files    system.bd]
 
 ################################################################################
 # read files:
-# 1. RTL design sources
-# 2. IP database files
+# 1. IP database files
+# 2. RTL design sources
 # 3. constraints
 ################################################################################
 
@@ -56,6 +56,8 @@ generate_target all [get_files    system.bd]
 #read_verilog                      $path_rtl/...
 
 read_verilog                      .gen/sources_1/bd/system/hdl/system_wrapper.v
+read_ip                           $path_ip/fir_lowpass_500Hz/fir_lowpass_500Hz.xci
+read_ip                           $path_ip/cic_decimate_by_4096/cic_decimate_by_4096.xci
 
 read_verilog                      $path_rtl/axi_master.v
 read_verilog                      $path_rtl/axi_slave.v
@@ -96,6 +98,8 @@ read_verilog                      $path_rtl/scan_new.v
 
 #constraints
 read_xdc                          $path_sdc/red_pitaya.xdc
+read_xdc                          $path_ip/fir_lowpass_500Hz/constraints/fir_compiler_v7_2.xdc
+read_xdc                          $path_ip/cic_decimate_by_4096/cic_decimate_by_4096_ooc.xdc
 
 ################################################################################
 # run synthesis
