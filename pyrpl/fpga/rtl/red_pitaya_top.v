@@ -532,6 +532,8 @@ red_pitaya_asg i_asg (
 //---------------------------------------------------------------------------------
 //  DSP module
 
+wire [14-1:0] iq0_output_signal;
+
 red_pitaya_dsp i_dsp (
    // signals
   .clk_i           (  adc_clk                    ),  // clock
@@ -545,6 +547,7 @@ red_pitaya_dsp i_dsp (
   .asg2_i          (  dsp_asg2_input             ),
   .scope1_o        (  to_scope_a                 ),
   .scope2_o        (  to_scope_b                 ),
+  .iq0_output_o    (  iq0_output_signal          ),
   .asg1phase_i     (  asg1phase_o                ),
 
   .pwm0            (  pwm_signals[0]             ),
@@ -651,6 +654,9 @@ endgenerate
 //---------------------------------------------------------------------------------
 //  Scan Module
 
+wire signed [31:0] demod_filtered_data;
+wire               demod_filtered_tvalid;        
+
 scan #(
     .MAX_STEPS_BITS (12),
     .DATA_WIDTH     (14)
@@ -659,8 +665,11 @@ scan #(
     .clk           (adc_clk),
     .rstn          (adc_rstn),
 
-    // Data Input (Hardwired to adc_a currently)
-    .input_i       (adc_a),
+    // Data Inputs - now supporting both ADC and IQ1
+    .adc_input_i   (adc_a),
+    .iq_input_i    (iq0_output_signal),
+    .demod_input_i (demod_filtered_data),
+    .demod_input_valid_i (demod_filtered_tvalid),
 
     // Trigger Output
     .trigger_o     (scan_trigger_o),
@@ -708,6 +717,22 @@ red_pitaya_3fgen #(
 assign dsp_asg1_input = fgen3_output_to_dsp_enable ? fgen3_dac_a : asg_a_output;
 assign dsp_asg2_input = fgen3_output_to_dsp_enable ? fgen3_dac_b : asg_b_output;
 
+
+//---------------------------------------------------------------------------------
+//  Lock-In Module - Demodulates and filter input signal
+
+lock_in #(
+    .PHASEBITS    (PHASEBITS),
+    .LUTBITS      (LUTBITS)
+) i_new (
+    .clk_i        (adc_clk),
+    .rstn_i       (adc_rstn),
+    .adc_input_i  (adc_a), // ADC input signal
+    .ref_signal_i (iq0_sin), // Reference signal from IQ0
+
+    .filtered_output_o (demod_filtered_data),
+    .filtered_output_valid_o (demod_filtered_tvalid)
+);
 
 
 //---------------------------------------------------------------------------------

@@ -6,17 +6,13 @@ This module controls the FPGA scan block, enabling automated sweeps.
 For each step:
 1. Outputs a trigger pulse on a *fixed* digital output pin (exp_p_io[7]).
 2. Waits for a settling time.
-3. Acquires and accumulates data from a *fixed* input source (adc_a)
-   for a dwell time.
+3. Acquires and accumulates data from either ADC input, IQ demodulator,
+   or demodulated lock-in output for a dwell time.
 4. Stores the 64-bit accumulated sum in BRAM.
 
 The accumulated data can then be read back and averaged in Python.
 
-**Important Limitations (Current FPGA Design):**
-*   **Input Source:** The input signal for the scan is currently HARDWIRED
-    to 'adc_a' in the FPGA design (`red_pitaya_top.v`). Changing the
-    `input_select` attribute in this Python module will NOT change the
-    physical input source without modifying and recompiling the FPGA design.
+**Important Note:**
 *   **Trigger Output Pin:** The trigger output pulse is currently HARDWIRED
     to the most significant bit pin of the expansion connector ('exp_p_io[7]')
     in the FPGA design (`red_pitaya_hk.v`). Changing the
@@ -24,6 +20,14 @@ The accumulated data can then be read back and averaged in Python.
     but it will NOT change the physical output pin without modifications
     to the FPGA design (`red_pitaya_hk.v`).
 
+**Input Modes:**
+*   **adc:** Direct 14-bit ADC input at 125 MHz
+*   **iq0:** 14-bit IQ demodulator output at 125 MHz
+*   **demod:** 32-bit demodulated lock-in output, valid every 4096 cycles (≈30.5 kHz)
+
+    When using 'demod' mode, the dwell_time still represents the total acquisition
+    time in clock cycles, but data is only accumulated when the valid signal is high.
+    The actual number of samples accumulated per step is stored in BRAM and used for averaging.
 """
 import time
 import numpy as np
@@ -33,6 +37,7 @@ from ..modules import HardwareModule
 from ..widgets.module_widgets.scan_widget import ScanWidget
 from ..attributes import (IntRegister, FloatProperty, BoolRegister,
                           SelectRegister, BaseRegister)
+
 # from ..dsp import InputSelectRegister # Cannot use this due to FPGA limitation
 # from ..pyrpl_utils import time
 
@@ -41,9 +46,11 @@ logger = logging.getLogger(__name__)
 # Define constants based on scan_new.v
 MAX_STEPS_BITS = 12
 DATA_WIDTH = 14
+DATA_WIDTH_DEMOD = 32
 ACCUM_WIDTH = 64
 BUS_DATA_WIDTH = 32
-FPGA_CLK_PERIOD_S = 8e-9 # 1/125MHz
+FPGA_CLK_PERIOD_S = 8e-9  # 1/125MHz
+DEMOD_DECIMATION = 4096  # Decimation factor for demodulated data
 
 # Address Map (relative to module base)
 ADDR_CONTROL = 0x00
@@ -54,9 +61,10 @@ ADDR_SETTLING_TIME = 0x0C
 ADDR_TRIGGER_LENGTH = 0x10
 ADDR_TRIGGER_PIN_SEL = 0x14
 ADDR_CURRENT_STEP = 0x18
-# ADDR_INPUT_SELECT = 0x20 # Not implemented in scan_new.v
-BRAM_LSB_BASE_ADDR = 0x10000 # As per Verilog: Module Base + 0x10000
-BRAM_MSB_BASE_ADDR = 0x20000 # As per Verilog: Module Base + 0x20000
+ADDR_INPUT_SELECT = 0x1C  # Input source selection
+BRAM_LSB_BASE_ADDR = 0x10000  # As per Verilog: Module Base + 0x10000
+BRAM_MSB_BASE_ADDR = 0x20000  # As per Verilog: Module Base + 0x20000
+BRAM_COUNT_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000
 
 # Control Register Bits
 CONTROL_START_BIT = 0
@@ -130,7 +138,7 @@ class Scan(HardwareModule):
     #_widget_class = ScanWidget # TODO: Create a widget later if needed
 
     _setup_attributes = ["num_steps", "dwell_time", "settling_time",
-                         "trigger_length", "trigger_pin_select"] # input_select removed
+                         "trigger_length", "trigger_pin_select", "input_select"]
 
     # Status Registers (Read-Only)
     busy = BoolRegister(ADDR_STATUS, bit=STATUS_BUSY_BIT,
@@ -171,11 +179,14 @@ class Scan(HardwareModule):
                                         doc="Selects trigger output pin (0-7). "
                                             "WARNING: Currently hardwired to DOUT7 (exp_p_io[7]) in FPGA!")
 
-    # Input Selection - Not implemented in FPGA, commented out
-    # input_select = InputSelectRegister(ADDR_INPUT_SELECT, # Address doesn't exist
-    #                                    doc="Selects the input signal source. "
-    #                                        "WARNING: Currently hardwired to 'adc_a' in FPGA!")
-
+    # Input Selection - now with 3 options
+    _input_options = {"adc": 0, "iq0": 1, "demod": 2}
+    input_select = SelectRegister(ADDR_INPUT_SELECT, options=_input_options,
+                                  default="demod",
+                                  doc="Selects the input signal source: "
+                                      "'adc' for 14-bit ADC input at 125 MHz, "
+                                      "'iq0' for 14-bit IQ demodulator output at 125 MHz, "
+                                      "'demod' for 32-bit lock-in demodulated output (valid every 4096 cycles).")
 
     # --- Control Methods ---
     def _write_control_bit(self, bit_position, value):
@@ -211,7 +222,7 @@ class Scan(HardwareModule):
             self.reset()
 
         self._check_overflow()
-        logger.info("Starting scan sweep...")
+        logger.info("Starting scan sweep with input source: %s...", self.input_select)
         self._write_control_bit(CONTROL_START_BIT, True)
 
     def stop(self):
@@ -265,7 +276,11 @@ class Scan(HardwareModule):
 
         Args:
             average (bool): If True (default), divides the accumulated sums
-                            by the dwell time in cycles to return averages.
+                            by the per-step valid sample count (from count BRAM).
+                            This handles all input modes:
+                            - For 'adc'/'iq0': count equals dwell_time in cycles.
+                            - For 'demod': count equals actual valid samples acquired.
+                            Steps with zero samples are set to 0 (with a warning).
                             If False, returns the raw 64-bit accumulated sums.
 
         Returns:
@@ -279,16 +294,17 @@ class Scan(HardwareModule):
         if self.busy:
             raise RuntimeError("Scan module is busy. Cannot read data.")
         if not self.done:
-             # Check if it was stopped prematurely vs never started
+            # Check if it was stopped prematurely vs never started
             if self.current_step > 0:
-                 logger.warning("Sweep was stopped before completion or did not run. "
-                                "Reading potentially incomplete data.")
+                logger.warning("Sweep was stopped before completion or did not run. "
+                               "Reading potentially incomplete data.")
             else:
-                 raise RuntimeError("Sweep has not finished or was reset. "
+                raise RuntimeError("Sweep has not finished or was reset. "
                                    "Run a sweep before getting data.")
 
         n_steps = self.num_steps
-        dwell_cycles = self._dwell_time_cycles # Read the cycle count
+        dwell_cycles = self._dwell_time_cycles  # Read the cycle count
+        input_mode = self.input_select
 
         if n_steps <= 0:
             logger.warning("Number of steps is zero or invalid. Returning empty array.")
@@ -297,7 +313,7 @@ class Scan(HardwareModule):
         if average and dwell_cycles <= 0:
             logger.error("Cannot average data: dwell_time is zero cycles. "
                          "Returning raw accumulated data.")
-            average = False # Force return of raw data
+            average = False  # Force return of raw data
 
         logger.info(f"Reading {n_steps} data points from FPGA BRAM using block reads...")
 
@@ -306,6 +322,7 @@ class Scan(HardwareModule):
             # module's base address (self.addr_base). Thus only provide relative offset here.
             lsb_data = self._reads(BRAM_LSB_BASE_ADDR, n_steps)
             msb_data = self._reads(BRAM_MSB_BASE_ADDR, n_steps)
+            count_data = self._reads(BRAM_COUNT_BASE_ADDR, n_steps)
 
             # --- Validation of received data ---
             if lsb_data is None or len(lsb_data) != n_steps:
@@ -314,9 +331,17 @@ class Scan(HardwareModule):
             if msb_data is None or len(msb_data) != n_steps:
                 raise RuntimeError(f"Block read from MSB BRAM failed or returned incorrect length. "
                                    f"Expected {n_steps}, got {len(msb_data) if msb_data is not None else 'None'}.")
+            if count_data is None or len(count_data) != n_steps:
+                raise RuntimeError(f"Block read from count data failed or returned incorrect length. "
+                                   f"Expected {n_steps}, got {len(count_data) if count_data is not None else 'None'}.")
 
             # --- Combine LSB and MSB into a 64-bit integer array ---
-            data_accum = (msb_data.astype(np.int64) << 32) | lsb_data.astype(np.int64)
+            combined = (msb_data.astype(np.uint64) << 32) | lsb_data.astype(np.uint64)
+            data_accum = combined.view(np.int64)
+            count_data = count_data.astype(np.int64)
+            # print("count_data:", count_data)
+            # print("lsbdata:", lsb_data)
+            # print("msb_data:", msb_data)
 
         except Exception as e:
             logger.error(f"Error during block read from BRAM: {e}")
@@ -325,9 +350,14 @@ class Scan(HardwareModule):
         logger.info("Data readout complete.")
 
         if average:
-            logger.info(f"Averaging data by dividing by dwell_time = {dwell_cycles} cycles.")
-            # Convert to float for division
-            avg_data = data_accum.astype(np.float64) / float(dwell_cycles)
+            logger.info("Averaging data using per-step sample counts from count BRAM.")
+            data = data_accum.astype(np.float64)
+            count = count_data.astype(np.float64)
+            avg_data = np.zeros_like(data)
+            mask = count > 0
+            if np.any(~mask):
+                logger.warning("Some steps had zero valid samples. Setting average to 0.")
+            avg_data[mask] = data[mask] / count[mask]
             return avg_data
         else:
             return data_accum
@@ -341,15 +371,21 @@ class Scan(HardwareModule):
         """
         dwell_cycles = self._dwell_time_cycles
         if dwell_cycles <= 0:
-            return # No accumulation if dwell time is zero
+            return None
 
-        # Max positive value from a 14-bit signed ADC
-        max_adc_val = (2**(DATA_WIDTH - 1)) - 1
+        if self.input_select == 'demod':
+            max_val = (2 ** (DATA_WIDTH_DEMOD - 1)) - 1
+            # Conservative: assume up to dwell_cycles / DECIMATION +1 samples (extra for partial)
+            effective_samples = (dwell_cycles // DEMOD_DECIMATION) + 1
+        else:
+            max_val = (2 ** (DATA_WIDTH - 1)) - 1
+            effective_samples = dwell_cycles
+
         # Max possible positive accumulated sum
-        max_possible_accum = max_adc_val * dwell_cycles
+        max_possible_accum = max_val * effective_samples
 
         # Max positive value for a 64-bit signed integer
-        max_int64 = (2**(ACCUM_WIDTH - 1)) - 1
+        max_int64 = (2 ** (ACCUM_WIDTH - 1)) - 1
 
         if max_possible_accum > max_int64:
             logger.warning("Potential accumulator overflow! "
@@ -357,8 +393,8 @@ class Scan(HardwareModule):
                            f"based on dwell_time ({dwell_cycles} cycles) "
                            f"exceeds the 64-bit limit ({max_int64}). "
                            "Consider reducing dwell_time.")
-            return False # Indicate potential overflow
-        return True # OK
+            return False  # Indicate potential overflow
+        return True  # OK
 
     def run_sweep(self, timeout=None, average=True):
         """

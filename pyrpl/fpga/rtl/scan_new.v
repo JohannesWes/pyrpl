@@ -6,16 +6,26 @@
  * 2. Waits for a settling time.
  * 3. Acquires and accumulates data from input channel for a dwell time.
  * 4. Stores the 64-bit accumulated sum in BRAM (split into LSB/MSB banks).
+ * 5. Stores the actual sample count in BRAM (for averaging).
  *
  * Configuration and data readout via System Bus.
  * BRAM banks are mapped to separate address regions for scope-like reading:
- * - LSB Bank: Base + 0x10000 - 0x1FFFF
- * - MSB Bank: Base + 0x20000 - 0x2FFFF
+ * - LSB Bank: Base + 0x10000 - 0x1FFFF (Lower 32 bits of accumulator)
+ * - MSB Bank: Base + 0x20000 - 0x2FFFF (Upper 32 bits of accumulator)
+ * - Count Bank: Base + 0x30000 - 0x3FFFF (Number of samples accumulated)
+ * 
+ * Supports three input modes:
+ * - ADC: 14-bit data at 125 MHz (accumulates every cycle)
+ * - IQ: 14-bit data at 125 MHz (accumulates every cycle)
+ * - DEMOD: 32-bit demodulated data valid every ~4096 cycles (accumulates only when valid)
+ * 
+ * The Count Bank ensures accurate averaging in software regardless of input mode or decimation rate.
  */
 module scan #(
     parameter MAX_STEPS_BITS    = 12,                 // Maximum number of steps = 2^12 = 4096
-    parameter DATA_WIDTH        = 14,                 // Input data width from ADC/DSP
-    parameter ACCUM_WIDTH       = 64,                 // Accumulator width - 64 bits should be sufficient for our acquisition times
+    parameter DATA_WIDTH    = 14,                     // Input data width from ADC/DSP,
+    parameter DATA_WIDTH_DEMOD  = 32,                 // Demodulated data width
+    parameter ACCUM_WIDTH       = 64,                 // Accumulator width. Bus aligned - 32 bits would only allow for 2^(32-14) / 125e6 s = 2 ms acquisition time per sample 
     parameter BUS_DATA_WIDTH    = 32,                 // System bus data width
     parameter ADDR_WIDTH        = 32,                 // System bus address width
     parameter PIN_SELECT_BITS   = 3                   // Allows selecting 1 of 8 pins - selection not implemented yet.
@@ -24,8 +34,11 @@ module scan #(
     input wire                          clk,
     input wire                          rstn,          // Active low reset
 
-    // Data Input 
-    input wire signed [DATA_WIDTH-1:0]  input_i,
+    // Data Inputs - three inputs and option for input selection
+    input wire signed [DATA_WIDTH-1:0]  adc_input_i,   // ADC input
+    input wire signed [DATA_WIDTH-1:0]  iq_input_i,    // IQ demodulator input
+    input wire signed [DATA_WIDTH_DEMOD-1:0] demod_input_i,     // Demodulated input (32-bit)
+    input wire                          demod_input_valid_i,    // Valid signal for demodulated data
 
     // Trigger Output
     output wire                         trigger_o,
@@ -56,13 +69,21 @@ localparam ADDR_SETTLING_TIME   = 20'h0000C; // R/W (cycles)
 localparam ADDR_TRIGGER_LENGTH  = 20'h00010; // R/W (cycles)
 localparam ADDR_TRIGGER_PIN_SEL = 20'h00014; // R/W
 localparam ADDR_CURRENT_STEP    = 20'h00018; // Read only
+localparam ADDR_INPUT_SELECT    = 20'h0001C; // R/W Input source selection
+
+// Input selection values
+localparam INPUT_SELECT_ADC   = 2'b00;
+localparam INPUT_SELECT_IQ    = 2'b01;
+localparam INPUT_SELECT_DEMOD = 2'b10;
 
 // BRAM Address Mapping
 // LSB Bank: Module Base + 0x10000 - 0x1FFFF (Relative Addr: 20'h1????)
 // MSB Bank: Module Base + 0x20000 - 0x2FFFF (Relative Addr: 20'h2????)
+// Count Bank: Module Base + 0x30000 - 0x3FFFF (Relative Addr: 20'h3????)
 localparam BRAM_ADDR_OFFSET     = 2;
 localparam BRAM_LSB_MAP_PATTERN = 20'h1????; // Relative addr pattern for LSB
 localparam BRAM_MSB_MAP_PATTERN = 20'h2????; // Relative addr pattern for MSB
+localparam BRAM_COUNT_MAP_PATTERN = 20'h3????; // Relative addr pattern for count
 
 // State Machine States
 localparam STATE_WIDTH    = 4;
@@ -90,9 +111,27 @@ reg [32-1:0]                reg_dwell_time;
 reg [32-1:0]                reg_settling_time;
 reg [32-1:0]                reg_trigger_length;
 reg [PIN_SELECT_BITS-1:0]   reg_trigger_pin_select; // For top-level routing
+reg [1:0]                   reg_input_select;       // Input selection register
 reg                         reg_start_cmd;
 reg                         reg_stop_cmd;
 reg                         reg_reset_cmd;
+
+// Valid sample counter for demodulated mode
+reg [32-1:0]                reg_valid_samples;      // Count of valid samples accumulated
+
+// Input multiplexer - handle different data widths
+reg signed [ACCUM_WIDTH-1:0] selected_input_extended;
+always @(*) begin
+    case (reg_input_select)
+        INPUT_SELECT_ADC:   selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH){adc_input_i[DATA_WIDTH-1]}}, adc_input_i};
+        INPUT_SELECT_IQ:    selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH){iq_input_i[DATA_WIDTH-1]}}, iq_input_i};
+        INPUT_SELECT_DEMOD: selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_DEMOD){demod_input_i[DATA_WIDTH_DEMOD-1]}}, demod_input_i};
+        default:            selected_input_extended = {ACCUM_WIDTH{1'b0}};
+    endcase
+end
+
+// Determine if we should accumulate this cycle
+wire accumulate_enable = (reg_input_select == INPUT_SELECT_DEMOD) ? demod_input_valid_i : 1'b1;
 
 // Status Registers/Signals
 reg                         reg_busy_flag;
@@ -113,16 +152,19 @@ reg                         bram_wr_en;
 wire [BRAM_ADDR_BITS-1:0]   bram_wr_addr;
 wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_lsb;
 wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_msb;
+wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_count;     // Valid sample count data
 
 // BRAM signals (Read Port B)
 wire [BRAM_ADDR_BITS-1:0]   bram_rd_addr_in;        // Combinatorial BRAM address from sys_addr
 reg  [BRAM_ADDR_BITS-1:0]   bram_rd_addr_p1;        // Pipelined BRAM address stage 1
 reg  [BRAM_ADDR_BITS-1:0]   bram_rd_addr_p2;        // Pipelined BRAM address stage 2 (used for BRAM read)
 
-reg  [BUS_DATA_WIDTH-1:0] bram_rd_data_lsb_raw;
-reg  [BUS_DATA_WIDTH-1:0] bram_rd_data_msb_raw;
+reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_lsb_raw;
+reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_msb_raw;
+reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_count_raw; // Raw count data from BRAM
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_lsb_reg;   // Registered BRAM data (after BRAM read latency)
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_msb_reg;   // Registered BRAM data (after BRAM read latency)
+reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_count_reg; // Registered count data
 
 
 //-----------------------------------------------------------------------------
@@ -162,6 +204,8 @@ always @(posedge clk) begin
             bram_rd_data_lsb_raw <= ram_lsb[bram_rd_addr_p1];
         end else if (bram_access_msb_p1) begin
             bram_rd_data_msb_raw <= ram_msb[bram_rd_addr_p1];
+        end else if (bram_access_count_p1) begin
+            bram_rd_data_count_raw <= ram_valid_samples[bram_rd_addr_p1];
         end
     end
 end
@@ -182,14 +226,16 @@ wire                        sys_en = sys_wen || sys_ren;
 // BRAM Access Detection (combinatorial based on current sys_addr)
 wire                        bram_access_lsb = (reg_addr[19:16] == 4'h1); // Check for address range 0x10000 - 0x1FFFF
 wire                        bram_access_msb = (reg_addr[19:16] == 4'h2); // Check for address range 0x20000 - 0x2FFFF
-wire                        is_bram_access = bram_access_lsb || bram_access_msb;
+wire                        bram_access_count = (reg_addr[19:16] == 4'h3); // Check for address range 0x30000 - 0x3FFFF
+wire                        is_bram_access = bram_access_lsb || bram_access_msb || bram_access_count;
 
 // Pipelined BRAM Access Control Signals
 reg                         sys_ren_p1, sys_ren_p2;
 reg                         is_bram_access_p1, is_bram_access_p2, is_bram_access_p3;
 reg                         bram_access_lsb_p1, bram_access_lsb_p2;
 reg                         bram_access_msb_p1, bram_access_msb_p2;
-reg                         select_lsb_for_rdata_p3; // Delayed select for sys_rdata muxing
+reg                         bram_access_count_p1, bram_access_count_p2; // Pipeline for count BRAM
+reg [1:0]                   select_bram_for_rdata_p3; // Delayed select for sys_rdata muxing (00=lsb, 01=msb, 10=count)
 
 //-----------------------------------------------------------------------------
 // Configuration Register Logic
@@ -201,6 +247,7 @@ always @(posedge clk) begin
         reg_settling_time      <= 32'd12500;  // Default 0.1ms
         reg_trigger_length     <= 32'd6250;    // Default 50 us
         reg_trigger_pin_select <= {PIN_SELECT_BITS{1'b0}};
+        reg_input_select       <= INPUT_SELECT_ADC; // Default to ADC input
         reg_start_cmd          <= 1'b0;
         reg_stop_cmd           <= 1'b0;
         reg_reset_cmd          <= 1'b0;
@@ -223,6 +270,7 @@ always @(posedge clk) begin
                 ADDR_SETTLING_TIME:   reg_settling_time      <= sys_wdata;
                 ADDR_TRIGGER_LENGTH:  reg_trigger_length     <= sys_wdata;
                 ADDR_TRIGGER_PIN_SEL: reg_trigger_pin_select <= sys_wdata[PIN_SELECT_BITS-1:0];
+                ADDR_INPUT_SELECT:    reg_input_select       <= sys_wdata[1:0];
                 default: ;
             endcase
         end
@@ -319,6 +367,7 @@ always @(posedge clk) begin
         dwell_counter    <= 32'b0;
         accum            <= {ACCUM_WIDTH{1'b0}};
         reg_current_step <= {MAX_STEPS_BITS{1'b0}};
+        reg_valid_samples <= 32'b0;
     end else begin
         // Reset conditions
         if (current_state == S_IDLE) begin // Reset counters when idle
@@ -332,6 +381,7 @@ always @(posedge clk) begin
               settling_counter <= 32'b0;
               dwell_counter    <= 32'b0;
               accum            <= {ACCUM_WIDTH{1'b0}};
+              reg_valid_samples <= 32'b0;  // Reset valid sample counter for new step
          end
 
         // Increment logic based on current state
@@ -345,10 +395,16 @@ always @(posedge clk) begin
             S_ACQUIRING:    begin
                                 // Update current step register for readout
                                 reg_current_step <= step_counter;
+                                
+                                // Increment dwell_counter (counts in clock cycles, not in sample cycles)
                                 if (dwell_counter < reg_dwell_time) begin
                                     dwell_counter <= dwell_counter + 1;
-                                    // Accumulate sign-extended input data
-                                    accum <= accum + $signed({{(ACCUM_WIDTH-DATA_WIDTH){input_i[DATA_WIDTH-1]}}, input_i});
+                                    
+                                    // Only accumulate samples when data is valid
+                                    if (accumulate_enable) begin
+                                        accum <= accum + selected_input_extended;
+                                        reg_valid_samples <= reg_valid_samples + 1;  // Count valid samples
+                                    end
                                 end
                             end
             
@@ -366,6 +422,7 @@ always @(posedge clk) begin
             dwell_counter    <= 32'b0;
             accum            <= {ACCUM_WIDTH{1'b0}};
             reg_current_step <= {MAX_STEPS_BITS{1'b0}};
+            reg_valid_samples <= 32'b0;
         end
     end
 end
@@ -394,16 +451,19 @@ assign trigger_o = trigger_pulse_active; // Connect internal signal to output
 //-----------------------------------------------------------------------------
 reg [BUS_DATA_WIDTH-1:0] ram_lsb [0:BRAM_DEPTH-1];
 reg [BUS_DATA_WIDTH-1:0] ram_msb [0:BRAM_DEPTH-1];
+reg [BUS_DATA_WIDTH-1:0] ram_valid_samples [0:BRAM_DEPTH-1];  // Store valid sample count per step
 
 // Port A: Write Port (Synchronous) - Controlled by State Machine
 assign bram_wr_addr     = step_counter;
 assign bram_wr_data_lsb = accum[BUS_DATA_WIDTH-1:0];
 assign bram_wr_data_msb = accum[ACCUM_WIDTH-1:BUS_DATA_WIDTH];
+assign bram_wr_data_count = reg_valid_samples;  // Assign valid sample count
 
 always @(posedge clk) begin
     if (bram_wr_en) begin
         ram_lsb[bram_wr_addr] <= bram_wr_data_lsb;
         ram_msb[bram_wr_addr] <= bram_wr_data_msb;
+        ram_valid_samples[bram_wr_addr] <= bram_wr_data_count;  // Store valid sample count
     end
 end
 
@@ -436,8 +496,9 @@ end
 
 always @(posedge clk) begin
     if (sys_ren_p2) begin // Use delayed ren to enable data capture
-        if(bram_access_lsb_p2)      bram_rd_data_lsb_reg <= bram_rd_data_lsb_raw;
-        else if(bram_access_msb_p2) bram_rd_data_msb_reg <= bram_rd_data_msb_raw;
+        if(bram_access_lsb_p2)          bram_rd_data_lsb_reg   <= bram_rd_data_lsb_raw;
+        else if(bram_access_msb_p2)     bram_rd_data_msb_reg   <= bram_rd_data_msb_raw;
+        else if(bram_access_count_p2)   bram_rd_data_count_reg <= bram_rd_data_count_raw;
     end
 end
 
@@ -456,7 +517,9 @@ always @(posedge clk) begin
         bram_access_lsb_p2 <= 1'b0;
         bram_access_msb_p1 <= 1'b0;
         bram_access_msb_p2 <= 1'b0;
-        select_lsb_for_rdata_p3 <= 1'b0;
+        bram_access_count_p1 <= 1'b0;
+        bram_access_count_p2 <= 1'b0;
+        select_bram_for_rdata_p3 <= 2'b00;
     end else begin
         // Pipeline sys_ren and access type signals
         sys_ren_p1 <= sys_ren;
@@ -471,9 +534,14 @@ always @(posedge clk) begin
 
         bram_access_msb_p1 <= bram_access_msb;
         bram_access_msb_p2 <= bram_access_msb_p1;
+        
+        bram_access_count_p1 <= bram_access_count;
+        bram_access_count_p2 <= bram_access_count_p1;
 
-        // Pipeline the LSB select signal to align with final data stage
-        select_lsb_for_rdata_p3 <= bram_access_lsb_p2;
+        // Pipeline the select signal to align with final data stage
+        if (bram_access_lsb_p2) select_bram_for_rdata_p3 <= 2'b00;      // LSB
+        else if (bram_access_msb_p2) select_bram_for_rdata_p3 <= 2'b01; // MSB
+        else if (bram_access_count_p2) select_bram_for_rdata_p3 <= 2'b10; // Count
 
         // Pipeline for acknowledge generation (4 cycles total delay)
         bram_ack_delay_pipe <= {bram_ack_delay_pipe[2:0], (sys_ren && is_bram_access)};
@@ -508,6 +576,7 @@ always @(posedge clk) begin
                     ADDR_TRIGGER_LENGTH:  sys_rdata <= reg_trigger_length;
                     ADDR_TRIGGER_PIN_SEL: sys_rdata <= { {(32-PIN_SELECT_BITS){1'b0}}, reg_trigger_pin_select };
                     ADDR_CURRENT_STEP:    sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_current_step };
+                    ADDR_INPUT_SELECT:    sys_rdata <= { {30{1'b0}}, reg_input_select };
                     default:              sys_rdata <= 32'hBADADD05; // Bad register address
         endcase
             end else begin
@@ -519,11 +588,12 @@ always @(posedge clk) begin
         // Gated by is_bram_access_p3 to ensure data pipeline is complete
         if (is_bram_access_p3) begin
             sys_ack <= bram_read_ack_delayed; // Use delayed acknowledge (4 cycles)
-            if (select_lsb_for_rdata_p3) begin // Use delayed select (3 cycles)
-                sys_rdata <= bram_rd_data_lsb_reg; // Use delayed data (3 cycles)
-            end else begin
-                sys_rdata <= bram_rd_data_msb_reg; // Use delayed data (3 cycles)
-            end
+            case (select_bram_for_rdata_p3) // Use delayed select (3 cycles)
+                2'b00: sys_rdata <= bram_rd_data_lsb_reg;   // LSB
+                2'b01: sys_rdata <= bram_rd_data_msb_reg;   // MSB
+                2'b10: sys_rdata <= bram_rd_data_count_reg; // Count
+                default: sys_rdata <= 32'h0;
+            endcase
         end
 
         // Handle Write Acknowledge (Immediate) - Overrides BRAM ack if concurrent

@@ -64,6 +64,7 @@ module red_pitaya_dsp #(
    input      [ 14-1: 0] dat_b_i         ,  //!< input data CHB
    output     [ 14-1: 0] dat_a_o         ,  //!< output data CHA
    output     [ 14-1: 0] dat_b_o         ,  //!< output data CHB
+   output     [ 14-1: 0] iq0_output_o    ,  //!< output data IQ0
 
    output     [ 14-1: 0] scope1_o,
    output     [ 14-1: 0] scope2_o,
@@ -466,5 +467,7 @@ assign iq2_phase_o = iq_phase[7];
 assign iq0_sin_o = iq_sin[5];
 assign iq1_sin_o = iq_sin[6];
 assign iq2_sin_o = iq_sin[7];
+
+assign iq0_output_o = output_signal[IQ0];
 
 endmodule
