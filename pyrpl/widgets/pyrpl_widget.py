@@ -46,7 +46,7 @@ class LogHandler(QtCore.QObject, logging.Handler):
     """
     A handler class which sends log strings to a wx object
     """
-    show_log = QtCore.Signal(list)
+    log_signal = QtCore.Signal(list)
 
     def __init__(self):
         """
@@ -63,7 +63,7 @@ class LogHandler(QtCore.QObject, logging.Handler):
         """
         try:
             msg = self.format(record)
-            self.show_log.emit([msg])
+            self.log_signal.emit([msg])
             #EL.display_log(record)
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -171,7 +171,7 @@ class PyrplWidget(QtWidgets.QMainWindow):
 
         self.status_bar = self.statusBar()
         EL.show_exception.connect(self.show_exception)
-        self.handler.show_log.connect(self.show_log)
+        self.handler.log_signal.connect(self.show_log)
         self.setWindowTitle(self.parent.c.pyrpl.name)
         self.timers = [self.timer_save_pos, self.timer_toolbar]
         #self.set_background_color(self)
