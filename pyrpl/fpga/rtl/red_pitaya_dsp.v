@@ -408,7 +408,37 @@ wire signed [LUTBITS-1:0]   iq_sin [7:0];
 wire signed [24-1:0] inphase_iq_demod;
 
 //IQ modules
-generate for (j = 5; j < 7; j = j+1) begin
+generate for (j = 5; j < 6; j = j+1) begin
+   red_pitaya_iq_block 
+     iq
+     (
+       // data
+       .clk_i        (  clk_i            ),  // clock
+       .rstn_i       (  rstn_i           ),  // reset - active low
+       .sync_i       (  sync[j]          ),  // synchronization of different dsp modules
+       .dat_i        (  input_signal [j] ),  // input data
+       .dat_o        (  output_direct[j] ),  // output data
+       .signal_o     (  output_signal[j] ),  // output signal
+       .iq_phase_o   (  iq_phase[j]      ),  // new phase output,
+       .sin_out      (  iq_sin[j]    ),  // output sine signals
+       .inphase_iq_demod(inphase_iq_demod),
+
+       // not using 2nd quadrature for most iq's: multipliers will be
+       // synthesized away by Vivado
+       //.signal2_o  (  output_signal[j*2]),  // output signal
+
+       // communication with PS
+       .addr ( sys_addr[16-1:0] ),
+       .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+       .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+       .ack  ( module_ack[j] ),
+       .rdata (module_rdata[j]),
+       .wdata (sys_wdata)
+     );
+end endgenerate
+
+//IQ modules
+generate for (j = 6; j < 7; j = j+1) begin
    red_pitaya_iq_block 
      iq
      (
@@ -451,7 +481,7 @@ generate for (j = 7; j < 8; j = j+1) begin
        .signal2_o    (  output_signal[j*2]), // output signal 2
        .iq_phase_o   (  iq_phase[j]    ),   // new phase output
        .sin_out      (  iq_sin[j]  ),
-       .inphase_iq_demod(inphase_iq_demod),
+
 
        // communication with PS
        .addr  ( sys_addr[16-1:0] ),

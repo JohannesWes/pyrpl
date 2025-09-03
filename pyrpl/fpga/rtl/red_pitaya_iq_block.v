@@ -363,11 +363,13 @@ red_pitaya_pfd_block pfd_block (
 );
 
 // output_signal multiplexer
-assign signal_o = (output_select==QUADRATURE) ? quadrature1_o
-				//: (output_select==QUADRATURE_HF) ? quadrature1_hf[LPFBITS-1:LPFBITS-SIGNALBITS] // maybe for the future
-				: (output_select==OUTPUT_DIRECT) ? dat_o
-				: (output_select==PFD) ? pfd_integral
-				: {SIGNALBITS{1'b0}};
+// assign signal_o = (output_select==QUADRATURE) ? quadrature1_o
+// 				//: (output_select==QUADRATURE_HF) ? quadrature1_hf[LPFBITS-1:LPFBITS-SIGNALBITS] // maybe for the future
+// 				: (output_select==OUTPUT_DIRECT) ? dat_o
+// 				: (output_select==PFD) ? pfd_integral
+// 				: {SIGNALBITS{1'b0}};
+
+assign signal_o = quadrature1;
 
 assign signal2_o = quadrature2_o;
 
