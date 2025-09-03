@@ -647,8 +647,16 @@ class BoolAttributeWidget(BaseAttributeWidget):
     def _get_widget_value(self):
         return (self.widget.checkState() == 2)
 
+    # def _set_widget_value(self, new_value):
+    #     self.widget.setCheckState(new_value * 2)
+
     def _set_widget_value(self, new_value):
-        self.widget.setCheckState(new_value * 2)
+        # This works across all Qt bindings (PyQt4, PyQt5, PySide, PySide2)
+        if new_value:
+            state = QtCore.Qt.Checked
+        else:
+            state = QtCore.Qt.Unchecked
+        self.widget.setCheckState(state)
 
 
 class BoolIgnoreAttributeWidget(BoolAttributeWidget):
