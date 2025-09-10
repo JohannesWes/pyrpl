@@ -98,7 +98,7 @@ wire signed [SIGNALBITS-1:0]  y_out;
 wire filter_off;
 
 assign y_out = y[MAXSHIFT+SIGNALBITS-1:MAXSHIFT];
-assign shifted_delta = delta<<((shift<MAXSHIFT) ? shift : MAXSHIFT);
+assign shifted_delta = delta<<((shift<MAXSHIFT) ? shift : MAXSHIFT); //If shift is small,k  is large  (faster response (wider bandwidth)).If shift is large, k is small  (slower response (narrow bandwidth)).
 
 always @(posedge clk_i) begin
     if (rstn_i == 1'b0) begin
