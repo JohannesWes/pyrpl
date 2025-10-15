@@ -22,7 +22,7 @@ The accumulated data can then be read back and averaged in Python.
 
 **Input Modes:**
 *   **adc:** Direct 14-bit ADC input at 125 MHz
-*   **iq0:** 14-bit IQ demodulator output at 125 MHz
+*   **iq0:** 24-bit IQ demodulator output at 125 MHz
 *   **demod:** 32-bit demodulated lock-in output, valid every 4096 cycles (≈30.5 kHz)
 
     When using 'demod' mode, the dwell_time still represents the total acquisition
@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 
 # Define constants based on scan_new.v
 MAX_STEPS_BITS = 12
-DATA_WIDTH = 14
+DATA_WIDTH_ADC = 14
+DATA_WIDTH_IQ = 24
 DATA_WIDTH_DEMOD = 32
 ACCUM_WIDTH = 64
 BUS_DATA_WIDTH = 32
@@ -182,10 +183,10 @@ class Scan(HardwareModule):
     # Input Selection - now with 3 options
     _input_options = {"adc": 0, "iq0": 1, "demod": 2}
     input_select = SelectRegister(ADDR_INPUT_SELECT, options=_input_options,
-                                  default="demod",
+                                  default="adc",
                                   doc="Selects the input signal source: "
                                       "'adc' for 14-bit ADC input at 125 MHz, "
-                                      "'iq0' for 14-bit IQ demodulator output at 125 MHz, "
+                                      "'iq0' for 24-bit IQ demodulator output at 125 MHz, "
                                       "'demod' for 32-bit lock-in demodulated output (valid every 4096 cycles).")
 
     # --- Control Methods ---
@@ -377,8 +378,11 @@ class Scan(HardwareModule):
             max_val = (2 ** (DATA_WIDTH_DEMOD - 1)) - 1
             # Conservative: assume up to dwell_cycles / DECIMATION +1 samples (extra for partial)
             effective_samples = (dwell_cycles // DEMOD_DECIMATION) + 1
+        elif self.input_select == 'iq0':
+            max_val = (2 ** (DATA_WIDTH_IQ - 1)) - 1
+            effective_samples = dwell_cycles  # Add this line
         else:
-            max_val = (2 ** (DATA_WIDTH - 1)) - 1
+            max_val = (2 ** (DATA_WIDTH_ADC - 1)) - 1
             effective_samples = dwell_cycles
 
         # Max possible positive accumulated sum

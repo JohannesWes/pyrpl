@@ -16,16 +16,17 @@
  * 
  * Supports three input modes:
  * - ADC: 14-bit data at 125 MHz (accumulates every cycle)
- * - IQ: 14-bit data at 125 MHz (accumulates every cycle)
+ * - IQ: 24-bit data at 125 MHz (accumulates every cycle)
  * - DEMOD: 32-bit demodulated data valid every ~4096 cycles (accumulates only when valid)
  * 
  * The Count Bank ensures accurate averaging in software regardless of input mode or decimation rate.
  */
 module scan #(
     parameter MAX_STEPS_BITS    = 12,                 // Maximum number of steps = 2^12 = 4096
-    parameter DATA_WIDTH    = 14,                     // Input data width from ADC/DSP,
+    parameter DATA_WIDTH_ADC    = 14,                 // Input data width from ADC/DSP,
+    parameter DATA_WIDTH_IQ     = 24,                 // Input data width from IQ-module demodulated output
     parameter DATA_WIDTH_DEMOD  = 32,                 // Demodulated data width
-    parameter ACCUM_WIDTH       = 64,                 // Accumulator width. Bus aligned - 32 bits would only allow for 2^(32-14) / 125e6 s = 2 ms acquisition time per sample 
+    parameter ACCUM_WIDTH       = 64,                 // Accumulator width. Bus aligned - 32 bits would only allow for 2^(32-14) / 125e6 s = 2 ms acquisition time per sample
     parameter BUS_DATA_WIDTH    = 32,                 // System bus data width
     parameter ADDR_WIDTH        = 32,                 // System bus address width
     parameter PIN_SELECT_BITS   = 3                   // Allows selecting 1 of 8 pins - selection not implemented yet.
@@ -35,8 +36,8 @@ module scan #(
     input wire                          rstn,          // Active low reset
 
     // Data Inputs - three inputs and option for input selection
-    input wire signed [DATA_WIDTH-1:0]  adc_input_i,   // ADC input
-    input wire signed [DATA_WIDTH-1:0]  iq_input_i,    // IQ demodulator input
+    input wire signed [DATA_WIDTH_ADC-1:0]  adc_input_i,   // ADC input
+    input wire signed [DATA_WIDTH_IQ-1:0]   iq_input_i,    // IQ demodulator input
     input wire signed [DATA_WIDTH_DEMOD-1:0] demod_input_i,     // Demodulated input (32-bit)
     input wire                          demod_input_valid_i,    // Valid signal for demodulated data
 
@@ -123,8 +124,8 @@ reg [32-1:0]                reg_valid_samples;      // Count of valid samples ac
 reg signed [ACCUM_WIDTH-1:0] selected_input_extended;
 always @(*) begin
     case (reg_input_select)
-        INPUT_SELECT_ADC:   selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH){adc_input_i[DATA_WIDTH-1]}}, adc_input_i};
-        INPUT_SELECT_IQ:    selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH){iq_input_i[DATA_WIDTH-1]}}, iq_input_i};
+        INPUT_SELECT_ADC:   selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_ADC){adc_input_i[DATA_WIDTH_ADC-1]}}, adc_input_i};
+        INPUT_SELECT_IQ:    selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_IQ){iq_input_i[DATA_WIDTH_IQ-1]}}, iq_input_i};
         INPUT_SELECT_DEMOD: selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_DEMOD){demod_input_i[DATA_WIDTH_DEMOD-1]}}, demod_input_i};
         default:            selected_input_extended = {ACCUM_WIDTH{1'b0}};
     endcase

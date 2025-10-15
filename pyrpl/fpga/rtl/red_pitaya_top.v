@@ -532,7 +532,7 @@ red_pitaya_asg i_asg (
 //---------------------------------------------------------------------------------
 //  DSP module
 
-wire [14-1:0] iq0_output_signal;
+wire signed [24-1:0] inphase_iq_demod;
 
 red_pitaya_dsp i_dsp (
    // signals
@@ -547,7 +547,6 @@ red_pitaya_dsp i_dsp (
   .asg2_i          (  dsp_asg2_input             ),
   .scope1_o        (  to_scope_a                 ),
   .scope2_o        (  to_scope_b                 ),
-  .iq0_output_o    (  iq0_output_signal          ),
   .asg1phase_i     (  asg1phase_o                ),
 
   .pwm0            (  pwm_signals[0]             ),
@@ -564,6 +563,8 @@ red_pitaya_dsp i_dsp (
   .iq0_sin_o       (  iq0_sin                    ),
   .iq1_sin_o       (  iq1_sin                    ),
   .iq2_sin_o       (  iq2_sin                    ),
+
+  .inphase_iq_demod_o (inphase_iq_demod),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -659,7 +660,8 @@ wire               demod_filtered_tvalid;
 
 scan #(
     .MAX_STEPS_BITS (12),
-    .DATA_WIDTH     (14)
+    .DATA_WIDTH_ADC (14),
+    .DATA_WIDTH_IQ  (24)
 ) i_scan (
     // System Clock and Reset
     .clk           (adc_clk),
@@ -667,7 +669,7 @@ scan #(
 
     // Data Inputs - now supporting both ADC and IQ1
     .adc_input_i   (adc_a),
-    .iq_input_i    (iq0_output_signal),
+    .iq_input_i    (inphase_iq_demod),
     .demod_input_i (demod_filtered_data),
     .demod_input_valid_i (demod_filtered_tvalid),
 
