@@ -435,7 +435,7 @@ generate for (j = 5; j < 6; j = j+1) begin
        .wdata (sys_wdata)
      );
 end endgenerate
-/*
+
 //IQ modules
 generate for (j = 6; j < 7; j = j+1) begin
    red_pitaya_iq_block 
@@ -491,7 +491,7 @@ generate for (j = 7; j < 8; j = j+1) begin
        .wdata (sys_wdata)
      );
 end endgenerate
-*/
+
 
 assign iq0_phase_o = iq_phase[5];
 //assign iq1_phase_o = iq_phase[6];
