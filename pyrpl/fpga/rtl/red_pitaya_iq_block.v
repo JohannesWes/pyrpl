@@ -194,7 +194,7 @@ wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
      .STAGES(INPUTFILTERSTAGES),
      .SHIFTBITS(INPUTFILTERSHIFTBITS),
-     .SIGNALBITS(14),
+     .SIGNALBITS(24),
      .MINBW(INPUTFILTERMINBW)
   )
   inputfilter
@@ -269,6 +269,8 @@ wire signed [LPFBITS-1:0] quadrature2;
 wire signed [SIGNALBITS-1:0] quadrature1_o;
 wire signed [SIGNALBITS-1:0] quadrature2_o;
 
+
+/*
 //option 1: Several low-pass filters without multipliers (bw is power of 2)
 red_pitaya_filter_block #(
      .STAGES(QUADRATUREFILTERSTAGES),
@@ -285,8 +287,11 @@ red_pitaya_filter_block #(
    .dat_o  ( {quadrature1,quadrature2}  )
   );
 
-  assign inphase_iq_demod = quadrature1;
+  */
+  
+  assign inphase_iq_demod = quadrature1_hf;
 
+/*
 //modulation, summing and direct output - Not required now.
 red_pitaya_iq_modulator_block #(
         .INBITS   (LPFBITS),
@@ -310,7 +315,7 @@ red_pitaya_iq_modulator_block #(
         .signal_q1_o  (quadrature1_o),
         .signal_q2_o  (quadrature2_o)
     );
-
+*/
 //NA functionality
 reg    do_averaging;
 reg signed [62-1:0] iq_i_sum;
@@ -369,7 +374,7 @@ red_pitaya_pfd_block pfd_block (
 // 				: (output_select==PFD) ? pfd_integral
 // 				: {SIGNALBITS{1'b0}};
 
-assign signal_o = quadrature1;
+assign signal_o = quadrature1_hf; 
 
 assign signal2_o = quadrature2_o;
 
