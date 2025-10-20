@@ -65,10 +65,10 @@
 module red_pitaya_iir_block
 #(  parameter IIRBITS = 32, //46        // iir coefficients represented with IIRBITS bits
     parameter IIRSHIFT = 29, //30       // iir coefficients FIXED POINT at bit IIRSHIFT
-    parameter IIRSTAGES = 14, //20       // maximum number of parallel biquads
-    parameter IIRSIGNALBITS = 32, //32,internally represent calculated results (32 is really necessary)
-    parameter SIGNALBITS = 14,      // in- and output signal bitwidth
-    parameter SIGNALSHIFT = 3, //5,       // over-represent input by SIGNALSHIFT bits (e.g. once input averaging is implemented)
+    parameter IIRSTAGES = 4, //20       // maximum number of parallel biquads
+    parameter IIRSIGNALBITS = 40, //32,internally represent calculated results (32 is really necessary)
+    parameter SIGNALBITS = 24,      // in- and output signal bitwidth
+    parameter SIGNALSHIFT = 2, //5,       // over-represent input by SIGNALSHIFT bits (e.g. once input averaging is implemented)
     parameter LOOPBITS = 10, //8
 
    //parameters for input pre-filter
@@ -80,8 +80,8 @@ module red_pitaya_iir_block
    // data
    input                 clk_i           ,  // clock
    input                 rstn_i          ,  // reset - active low
-   input      [ 14-1: 0] dat_i           ,  // input data
-   output reg [ 14-1: 0] dat_o           ,  // output data
+   input      [ 24-1: 0] dat_i           ,  // input data
+   output reg [ 24-1: 0] dat_o           ,  // output data
 
    // communication with PS
    input      [ 16-1: 0] addr,
@@ -357,7 +357,7 @@ red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+4), .SHIFT(SIGNALSHIFT), .BITS_OU
 // better solution - incremental adding - see below, here only saturator
 reg signed [IIRSIGNALBITS+4-1:0] dat_o_sum;
 wire signed [SIGNALBITS-1:0] dat_o_full;
-  red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+4), .SHIFT(SIGNALBITS + SIGNALSHIFT), .BITS_OUT(SIGNALBITS)) //.SHIFT(SIGNALSHIFT
+  red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+4), .SHIFT(SIGNALBITS + SIGNALSHIFT-10), .BITS_OUT(SIGNALBITS)) //.SHIFT(SIGNALSHIFT
    s_dat_o_module (
    .input_i(dat_o_sum),
    .output_o(dat_o_full),
