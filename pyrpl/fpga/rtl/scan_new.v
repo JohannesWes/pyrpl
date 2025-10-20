@@ -1,25 +1,130 @@
 /**
- * @brief Scan Module for Pyrpl
+ * @brief Scan Module for Pyrpl - Dual-Mode Data Acquisition System
  *
- * Performs a sweep across a defined number of steps. For each step:
- * 1. Outputs a trigger pulse.
- * 2. Waits for a settling time.
- * 3. Acquires and accumulates data from input channel for a dwell time.
- * 4. Stores the 64-bit accumulated sum in BRAM (split into LSB/MSB banks).
- * 5. Stores the actual sample count in BRAM (for averaging).
+ * ============================================================================
+ * OVERVIEW
+ * ============================================================================
+ * This module provides two mutually exclusive operating modes:
  *
- * Configuration and data readout via System Bus.
- * BRAM banks are mapped to separate address regions for scope-like reading:
- * - LSB Bank: Base + 0x10000 - 0x1FFFF (Lower 32 bits of accumulator)
- * - MSB Bank: Base + 0x20000 - 0x2FFFF (Upper 32 bits of accumulator)
- * - Count Bank: Base + 0x30000 - 0x3FFFF (Number of samples accumulated)
- * 
- * Supports three input modes:
- * - ADC: 14-bit data at 125 MHz (accumulates every cycle)
- * - IQ: 24-bit data at 125 MHz (accumulates every cycle)
- * - DEMOD: 32-bit demodulated data valid every ~4096 cycles (accumulates only when valid)
- * 
- * The Count Bank ensures accurate averaging in software regardless of input mode or decimation rate.
+ * 1. SCAN MODE: Step-by-step triggered sweeps with data accumulation
+ * 2. STREAM MODE: Continuous ring-buffer streaming for real-time acquisition
+ *
+ * Both modes share the same BRAM infrastructure but cannot run simultaneously.
+ *
+ * ============================================================================
+ * MODE 1: SCAN MODE (State Machine Controlled)
+ * ============================================================================
+ * Performs automated sweeps across a defined number of steps. For each step:
+ * 1. Outputs a trigger pulse (trigger_o)
+ * 2. Waits for a settling time (programmable delay)
+ * 3. Acquires and accumulates data from selected input for a dwell time
+ * 4. Stores the 64-bit accumulated sum in BRAM (split into LSB/MSB banks)
+ * 5. Stores the actual sample count in data3 BRAM (for accurate averaging)
+ *
+ * State Machine Sequence:
+ *   S_IDLE → S_START_STEP → S_TRIGGERING → S_SETTLING → S_ACQUIRING →
+ *   S_STORING_REQ → S_STORING_WAIT → S_FINISHING → (repeat or S_DONE)
+ *
+ * Control: Write to ADDR_CONTROL (0x00) with start/stop/reset bits
+ * Status: Read busy/done flags from ADDR_STATUS (0x00)
+ *
+ * ============================================================================
+ * MODE 2: STREAM MODE (Free-Running Circular Buffer)
+ * ============================================================================
+ * Provides continuous high-speed streaming of demodulated lock-in data
+ * (~30.5 kHz sample rate) without triggering or step sequencing.
+ *
+ * Architecture:
+ * - Data3 BRAM (4096 x 32-bit) operates as a circular ring buffer
+ * - FPGA write engine: Increments reg_stream_wr_ptr on each valid sample
+ * - CPU read access: Via standard BRAM read port (address 0x30000+)
+ * - Independent pointers: Writer never blocks; reader tracks position
+ *
+ * Operation:
+ * 1. Enable: Set ADDR_STREAM_CONTROL[0] = 1 (also triggers reset pulse)
+ * 2. FPGA writes: On every demod_input_valid_i, writes demod_input_i to
+ *    ram_data3[reg_stream_wr_ptr], then increments pointer (wraps at 4096)
+ * 3. CPU reads: Polls ADDR_STREAM_WR_PTR to find new data, reads via
+ *    BRAM port B (standard multi-cycle latency read)
+ * 4. Disable: Clear ADDR_STREAM_CONTROL[0] = 0
+ *
+ * Streaming Registers:
+ * - ADDR_STREAM_CONTROL (0x20): [0]=enable (level), [1]=reset (pulse)
+ * - ADDR_STREAM_STATUS (0x24):  [0]=active, [1]=overflow (reserved)
+ * - ADDR_STREAM_WR_PTR (0x28):  Current FPGA write pointer (0-4095)
+ * - ADDR_STREAM_SAMPLES (0x2C): Total samples written (32-bit counter)
+ *
+ * Overflow Prevention:
+ * - Software must read faster than write rate (~30.5 kHz)
+ * - If reader falls behind by 4096+ samples, data loss occurs
+ * - Python layer detects this by comparing sample counters
+ *
+ * Performance:
+ * - Sample rate: 125 MHz / 4096 ≈ 30.517 kHz (from lock-in decimation)
+ * - Buffer latency: Up to 134 ms (4096 samples / 30.5 kHz)
+ * - No FPGA-side overflow flag (software responsibility)
+ *
+ * ============================================================================
+ * INPUT MODES (Both Scan and Stream)
+ * ============================================================================
+ * Selected via ADDR_INPUT_SELECT (0x1C):
+ * - 0 (ADC):   14-bit ADC input at 125 MHz (scan only)
+ * - 1 (IQ):    24-bit IQ demod output at 125 MHz (scan only)
+ * - 2 (DEMOD): 32-bit lock-in output, valid every 4096 cycles (both modes)
+ *
+ * Note: Stream mode forces input_select = DEMOD (enforced by Python)
+ *
+ * ============================================================================
+ * MEMORY MAP (Relative to Module Base Address)
+ * ============================================================================
+ * Registers (0x00000 - 0x0FFFF):
+ *   0x00: CONTROL/STATUS (write: start/stop/reset; read: busy/done)
+ *   0x04: NUM_STEPS (12-bit scan step count)
+ *   0x08: DWELL_TIME (32-bit cycle count per step)
+ *   0x0C: SETTLING_TIME (32-bit cycle delay after trigger)
+ *   0x10: TRIGGER_LENGTH (32-bit trigger pulse duration)
+ *   0x14: TRIGGER_PIN_SEL (3-bit pin selection, not yet routed)
+ *   0x18: CURRENT_STEP (read-only, current scan step index)
+ *   0x1C: INPUT_SELECT (2-bit: 0=ADC, 1=IQ, 2=DEMOD)
+ *   0x20: STREAM_CONTROL (bit0=enable, bit1=reset)
+ *   0x24: STREAM_STATUS (bit0=active, bit1=overflow_reserved)
+ *   0x28: STREAM_WR_PTR (12-bit write pointer)
+ *   0x2C: STREAM_SAMPLES (32-bit total sample counter)
+ *
+ * BRAM Banks (64KB each, dual-port):
+ *   LSB Bank:   0x10000 - 0x1FFFF (lower 32 bits of 64-bit accumulator)
+ *   MSB Bank:   0x20000 - 0x2FFFF (upper 32 bits of 64-bit accumulator)
+ *   Data3 Bank: 0x30000 - 0x3FFFF (dual-purpose: counts or stream data)
+ *
+ * BRAM Port A (Write): Controlled by scan FSM or stream engine
+ * BRAM Port B (Read):  System bus with 4-cycle read latency pipeline
+ *
+ * ============================================================================
+ * TIMING CONSTRAINTS
+ * ============================================================================
+ * - System clock: 125 MHz (8 ns period)
+ * - All counters increment in clock cycles (not sample periods)
+ * - Demod valid signal: High for 1 cycle every 4096 cycles (0.024% duty)
+ * - BRAM read latency: 4 clock cycles (address → data available)
+ * - Trigger output: Combinatorial from state machine (zero latency)
+ *
+ * ============================================================================
+ * USAGE GUIDELINES
+ * ============================================================================
+ * Scan Mode:
+ *   1. Configure num_steps, dwell_time, settling_time, input_select
+ *   2. Write CONTROL[0] = 1 (start)
+ *   3. Poll STATUS until done = 1
+ *   4. Read accumulated data from LSB/MSB/Data3 banks
+ *
+ * Stream Mode:
+ *   1. Set input_select = 2 (DEMOD)
+ *   2. Write STREAM_CONTROL = 0x3 (enable + reset)
+ *   3. Continuously poll STREAM_WR_PTR and read new data from Data3 bank
+ *   4. Write STREAM_CONTROL = 0x0 to stop
+ *
+ * IMPORTANT: Never enable scan (CONTROL[0]) while streaming is active!
+ *            State machine prevents this, but avoid race conditions.
  */
 module scan #(
     parameter MAX_STEPS_BITS    = 12,                 // Maximum number of steps = 2^12 = 4096
@@ -71,7 +176,7 @@ localparam ADDR_TRIGGER_LENGTH  = 20'h00010; // R/W (cycles)
 localparam ADDR_TRIGGER_PIN_SEL = 20'h00014; // R/W
 localparam ADDR_CURRENT_STEP    = 20'h00018; // Read only
 localparam ADDR_INPUT_SELECT    = 20'h0001C; // R/W Input source selection
-// Streaming control/status (demodulated data ring buffer)
+// Streaming control/status (demodulated data ring buffer in data3 BRAM)
 localparam ADDR_STREAM_CONTROL  = 20'h00020; // W/R: bit0 enable (level), bit1 reset (pulse)
 localparam ADDR_STREAM_STATUS   = 20'h00024; // R: bit0 active, bit1 overflow
 localparam ADDR_STREAM_WR_PTR   = 20'h00028; // R: current write pointer (mod BRAM depth)
@@ -85,11 +190,11 @@ localparam INPUT_SELECT_DEMOD = 2'b10;
 // BRAM Address Mapping
 // LSB Bank: Module Base + 0x10000 - 0x1FFFF (Relative Addr: 20'h1????)
 // MSB Bank: Module Base + 0x20000 - 0x2FFFF (Relative Addr: 20'h2????)
-// Count Bank: Module Base + 0x30000 - 0x3FFFF (Relative Addr: 20'h3????)
+// Data3 Bank: Module Base + 0x30000 - 0x3FFFF (Relative Addr: 20'h3????)
 localparam BRAM_ADDR_OFFSET     = 2;
 localparam BRAM_LSB_MAP_PATTERN = 20'h1????; // Relative addr pattern for LSB
 localparam BRAM_MSB_MAP_PATTERN = 20'h2????; // Relative addr pattern for MSB
-localparam BRAM_COUNT_MAP_PATTERN = 20'h3????; // Relative addr pattern for count
+localparam BRAM_DATA3_MAP_PATTERN = 20'h3????; // Relative addr pattern for data3 (counts/stream)
 
 // State Machine States
 localparam STATE_WIDTH    = 4;
@@ -166,7 +271,7 @@ reg                         bram_wr_en;
 wire [BRAM_ADDR_BITS-1:0]   bram_wr_addr;
 wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_lsb;
 wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_msb;
-wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_count;     // Valid sample count data
+wire [BUS_DATA_WIDTH-1:0]   bram_wr_data_data3;     // Data3 bank data (sample counts or stream data)
 
 // BRAM signals (Read Port B)
 wire [BRAM_ADDR_BITS-1:0]   bram_rd_addr_in;        // Combinatorial BRAM address from sys_addr
@@ -175,10 +280,10 @@ reg  [BRAM_ADDR_BITS-1:0]   bram_rd_addr_p2;        // Pipelined BRAM address st
 
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_lsb_raw;
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_msb_raw;
-reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_count_raw; // Raw count data from BRAM
+reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_data3_raw; // Raw data3 data from BRAM
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_lsb_reg;   // Registered BRAM data (after BRAM read latency)
 reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_msb_reg;   // Registered BRAM data (after BRAM read latency)
-reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_count_reg; // Registered count data
+reg  [BUS_DATA_WIDTH-1:0]   bram_rd_data_data3_reg; // Registered data3 data
 
 
 //-----------------------------------------------------------------------------
@@ -218,8 +323,8 @@ always @(posedge clk) begin
             bram_rd_data_lsb_raw <= ram_lsb[bram_rd_addr_p1];
         end else if (bram_access_msb_p1) begin
             bram_rd_data_msb_raw <= ram_msb[bram_rd_addr_p1];
-        end else if (bram_access_count_p1) begin
-            bram_rd_data_count_raw <= ram_valid_samples[bram_rd_addr_p1];
+        end else if (bram_access_data3_p1) begin
+            bram_rd_data_data3_raw <= ram_data3[bram_rd_addr_p1];
         end
     end
 end
@@ -240,16 +345,16 @@ wire                        sys_en = sys_wen || sys_ren;
 // BRAM Access Detection (combinatorial based on current sys_addr)
 wire                        bram_access_lsb = (reg_addr[19:16] == 4'h1); // Check for address range 0x10000 - 0x1FFFF
 wire                        bram_access_msb = (reg_addr[19:16] == 4'h2); // Check for address range 0x20000 - 0x2FFFF
-wire                        bram_access_count = (reg_addr[19:16] == 4'h3); // Check for address range 0x30000 - 0x3FFFF
-wire                        is_bram_access = bram_access_lsb || bram_access_msb || bram_access_count;
+wire                        bram_access_data3 = (reg_addr[19:16] == 4'h3); // Check for address range 0x30000 - 0x3FFFF
+wire                        is_bram_access = bram_access_lsb || bram_access_msb || bram_access_data3;
 
 // Pipelined BRAM Access Control Signals
 reg                         sys_ren_p1, sys_ren_p2;
 reg                         is_bram_access_p1, is_bram_access_p2, is_bram_access_p3;
 reg                         bram_access_lsb_p1, bram_access_lsb_p2;
 reg                         bram_access_msb_p1, bram_access_msb_p2;
-reg                         bram_access_count_p1, bram_access_count_p2; // Pipeline for count BRAM
-reg [1:0]                   select_bram_for_rdata_p3; // Delayed select for sys_rdata muxing (00=lsb, 01=msb, 10=count)
+reg                         bram_access_data3_p1, bram_access_data3_p2; // Pipeline for data3 BRAM
+reg [1:0]                   select_bram_for_rdata_p3; // Delayed select for sys_rdata muxing (00=lsb, 01=msb, 10=data3)
 
 //-----------------------------------------------------------------------------
 // Configuration Register Logic
@@ -454,7 +559,7 @@ always @(posedge clk) begin
         end
 
         // ------------------------------------------------------------------
-        // Streaming engine (demodulated input -> ring buffer in count BRAM)
+        // Streaming engine (demodulated input -> ring buffer in data3 BRAM)
         // ------------------------------------------------------------------
         // Reset streaming engine
         if (reg_stream_reset_cmd || !reg_stream_enable) begin
@@ -504,35 +609,35 @@ assign trigger_o = trigger_pulse_active; // Connect internal signal to output
 //-----------------------------------------------------------------------------
 (* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_lsb [0:BRAM_DEPTH-1];
 (* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_msb [0:BRAM_DEPTH-1];
-(* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_valid_samples [0:BRAM_DEPTH-1];  // Store valid sample count or stream samples
+(* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_data3 [0:BRAM_DEPTH-1];  // Dual-purpose: sample counts (scan) or stream data (stream)
 
 // Port A: Write Port (Synchronous) - Controlled by State Machine
 assign bram_wr_addr     = step_counter;
 assign bram_wr_data_lsb = accum[BUS_DATA_WIDTH-1:0];
 assign bram_wr_data_msb = accum[ACCUM_WIDTH-1:BUS_DATA_WIDTH];
-assign bram_wr_data_count = reg_valid_samples;  // Assign valid sample count
+assign bram_wr_data_data3 = reg_valid_samples;  // Assign valid sample count
 
-// Streaming write enable (demod stream into count BRAM ring buffer)
+// Streaming write enable (demod stream into data3 BRAM ring buffer)
 wire stream_wr_en = reg_stream_enable && (reg_input_select == INPUT_SELECT_DEMOD) && demod_input_valid_i;
-// Muxed write controls for count BRAM (single-port write template)
-reg                       cnt_we_mux;
-reg [BRAM_ADDR_BITS-1:0]  cnt_waddr_mux;
-reg [BUS_DATA_WIDTH-1:0]  cnt_wdata_mux;
+// Muxed write controls for data3 BRAM (single-port write template)
+reg                       data3_we_mux;
+reg [BRAM_ADDR_BITS-1:0]  data3_waddr_mux;
+reg [BUS_DATA_WIDTH-1:0]  data3_wdata_mux;
 
 always @(*) begin
     // Default no write
-    cnt_we_mux    = 1'b0;
-    cnt_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
-    cnt_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
+    data3_we_mux    = 1'b0;
+    data3_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
+    data3_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
     // Priority: scan write over stream write
     if (bram_wr_en) begin
-        cnt_we_mux    = 1'b1;
-        cnt_waddr_mux = bram_wr_addr;
-        cnt_wdata_mux = bram_wr_data_count;
+        data3_we_mux    = 1'b1;
+        data3_waddr_mux = bram_wr_addr;
+        data3_wdata_mux = bram_wr_data_data3;
     end else if (stream_wr_en) begin
-        cnt_we_mux    = 1'b1;
-        cnt_waddr_mux = reg_stream_wr_ptr;
-        cnt_wdata_mux = demod_input_i[31:0];
+        data3_we_mux    = 1'b1;
+        data3_waddr_mux = reg_stream_wr_ptr;
+        data3_wdata_mux = demod_input_i[31:0];
     end
 end
 
@@ -542,9 +647,9 @@ always @(posedge clk) begin
         ram_lsb[bram_wr_addr] <= bram_wr_data_lsb;
         ram_msb[bram_wr_addr] <= bram_wr_data_msb;
     end
-    // Count array uses muxed single-port write style (scan or stream)
-    if (cnt_we_mux) begin
-        ram_valid_samples[cnt_waddr_mux] <= cnt_wdata_mux;
+    // Data3 array uses muxed single-port write style (scan or stream)
+    if (data3_we_mux) begin
+        ram_data3[data3_waddr_mux] <= data3_wdata_mux;
     end
 end
 
@@ -579,7 +684,7 @@ always @(posedge clk) begin
     if (sys_ren_p2) begin // Use delayed ren to enable data capture
         if(bram_access_lsb_p2)          bram_rd_data_lsb_reg   <= bram_rd_data_lsb_raw;
         else if(bram_access_msb_p2)     bram_rd_data_msb_reg   <= bram_rd_data_msb_raw;
-        else if(bram_access_count_p2)   bram_rd_data_count_reg <= bram_rd_data_count_raw;
+        else if(bram_access_data3_p2)   bram_rd_data_data3_reg <= bram_rd_data_data3_raw;
     end
 end
 
@@ -598,8 +703,8 @@ always @(posedge clk) begin
         bram_access_lsb_p2 <= 1'b0;
         bram_access_msb_p1 <= 1'b0;
         bram_access_msb_p2 <= 1'b0;
-        bram_access_count_p1 <= 1'b0;
-        bram_access_count_p2 <= 1'b0;
+        bram_access_data3_p1 <= 1'b0;
+        bram_access_data3_p2 <= 1'b0;
         select_bram_for_rdata_p3 <= 2'b00;
     end else begin
         // Pipeline sys_ren and access type signals
@@ -615,14 +720,14 @@ always @(posedge clk) begin
 
         bram_access_msb_p1 <= bram_access_msb;
         bram_access_msb_p2 <= bram_access_msb_p1;
-        
-        bram_access_count_p1 <= bram_access_count;
-        bram_access_count_p2 <= bram_access_count_p1;
+
+        bram_access_data3_p1 <= bram_access_data3;
+        bram_access_data3_p2 <= bram_access_data3_p1;
 
         // Pipeline the select signal to align with final data stage
         if (bram_access_lsb_p2) select_bram_for_rdata_p3 <= 2'b00;      // LSB
         else if (bram_access_msb_p2) select_bram_for_rdata_p3 <= 2'b01; // MSB
-        else if (bram_access_count_p2) select_bram_for_rdata_p3 <= 2'b10; // Count
+        else if (bram_access_data3_p2) select_bram_for_rdata_p3 <= 2'b10; // Data3
 
         // Pipeline for acknowledge generation (4 cycles total delay)
         bram_ack_delay_pipe <= {bram_ack_delay_pipe[2:0], (sys_ren && is_bram_access)};
@@ -676,7 +781,7 @@ always @(posedge clk) begin
             case (select_bram_for_rdata_p3) // Use delayed select (3 cycles)
                 2'b00: sys_rdata <= bram_rd_data_lsb_reg;   // LSB
                 2'b01: sys_rdata <= bram_rd_data_msb_reg;   // MSB
-                2'b10: sys_rdata <= bram_rd_data_count_reg; // Count
+                2'b10: sys_rdata <= bram_rd_data_data3_reg; // Data3
                 default: sys_rdata <= 32'h0;
             endcase
         end

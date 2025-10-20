@@ -2,9 +2,9 @@
 
 This document tracks potential optimizations and improvements for future development of PyRPL.
 
-## Performance Optimizations
+## 1. Performance Optimizations
 
-### Scan Module: Contiguous BRAM Mapping for Single-Call Data Readout
+### 1.1. Scan Module: Contiguous BRAM Mapping for Single-Call Data Readout
 
 **Status:** Proposed
 **Priority:** Medium
@@ -16,7 +16,7 @@ This document tracks potential optimizations and improvements for future develop
 The Scan module uses three separate Block RAMs (BRAMs) to store scan data:
 - **LSB BRAM** (0x10000): Lower 32 bits of 64-bit accumulator
 - **MSB BRAM** (0x20000): Upper 32 bits of 64-bit accumulator
-- **COUNT BRAM** (0x30000): Valid sample counts per step
+- **Data3 BRAM** (0x30000): Valid sample counts per step (scan mode) or streaming data (stream mode)
 
 These are mapped to **non-contiguous 64KB address regions**, requiring **three separate TCP `_reads()` calls** to fetch complete scan data (see `scan.py:516-521`).
 
@@ -27,7 +27,7 @@ Remap the BRAMs to **contiguous 4KB regions**:
 ```python
 BRAM_LSB_BASE_ADDR   = 0x10000  # 0x10000-0x10FFF (4096 words = 16KB)
 BRAM_MSB_BASE_ADDR   = 0x11000  # 0x11000-0x11FFF (4096 words = 16KB)
-BRAM_COUNT_BASE_ADDR = 0x12000  # 0x12000-0x12FFF (4096 words = 16KB)
+BRAM_DATA3_BASE_ADDR = 0x12000  # 0x12000-0x12FFF (4096 words = 16KB)
 ```
 
 This would allow reading all three BRAMs in a **single `_reads()` call**:
@@ -39,7 +39,7 @@ all_data = self._reads(BRAM_LSB_BASE_ADDR, n_steps * 3)
 # Split the result
 lsb_data   = all_data[0:n_steps]
 msb_data   = all_data[n_steps:n_steps*2]
-count_data = all_data[n_steps*2:n_steps*3]
+data3_data = all_data[n_steps*2:n_steps*3]
 
 # Combine LSB and MSB as before
 combined = (msb_data.astype(np.uint64) << 32) | lsb_data.astype(np.uint64)
@@ -64,26 +64,26 @@ data_accum = combined.view(np.int64)
      // Current (non-contiguous):
      wire bram_access_lsb   = (reg_addr[19:16] == 4'h1);  // 0x10000-0x1FFFF
      wire bram_access_msb   = (reg_addr[19:16] == 4'h2);  // 0x20000-0x2FFFF
-     wire bram_access_count = (reg_addr[19:16] == 4'h3);  // 0x30000-0x3FFFF
+     wire bram_access_data3 = (reg_addr[19:16] == 4'h3);  // 0x30000-0x3FFFF
 
      // Proposed (contiguous 4KB regions):
      wire bram_access_lsb   = (reg_addr[19:12] == 8'h10);  // 0x10000-0x10FFF
      wire bram_access_msb   = (reg_addr[19:12] == 8'h11);  // 0x11000-0x11FFF
-     wire bram_access_count = (reg_addr[19:12] == 8'h12);  // 0x12000-0x12FFF
+     wire bram_access_data3 = (reg_addr[19:12] == 8'h12);  // 0x12000-0x12FFF
      ```
    - [ ] Verify no address conflicts with other module regions
    - [ ] Update address documentation in Verilog header comments (lines 11-16)
 
 2. **Python Constants** (`pyrpl/hardware_modules/scan.py`)
-   - [ ] Update BRAM address constants (lines 71-73):
+   - [ ] Update BRAM address constants (lines 80-82):
      ```python
      BRAM_LSB_BASE_ADDR   = 0x10000
      BRAM_MSB_BASE_ADDR   = 0x11000  # Changed from 0x20000
-     BRAM_COUNT_BASE_ADDR = 0x12000  # Changed from 0x30000
+     BRAM_DATA3_BASE_ADDR = 0x12000  # Changed from 0x30000
      ```
 
 3. **Python Data Readout** (`pyrpl/hardware_modules/scan.py`)
-   - [ ] Modify `get_data()` method (lines 516-521) to use single bulk read
+   - [ ] Modify `get_data()` method (lines 528-530) to use single bulk read
    - [ ] Add bounds checking for n_steps * 3 <= 65535
    - [ ] Update error handling for unified read operation
    - [ ] Consider adding a config flag to support both old/new FPGA versions
@@ -91,7 +91,7 @@ data_accum = combined.view(np.int64)
 4. **Testing**
    - [ ] Verify FPGA compiles without timing violations
    - [ ] Test with various step counts (1, 100, 4096, 21845)
-   - [ ] Verify data integrity (LSB/MSB/COUNT match expected values)
+   - [ ] Verify data integrity (LSB/MSB/Data3 match expected values)
    - [ ] Benchmark read performance (before/after comparison)
    - [ ] Test streaming mode still works correctly
 
@@ -134,9 +134,9 @@ For high-speed continuous streaming where `get_data()` is called repeatedly, thi
 
 ---
 
-## Additional Future Improvements
+## 2. Reliability and Robustness Improvements
 
-### Scan Module: Implement Hardware Overflow Detection in Streaming Mode
+### 2.1. Scan Module: Implement Hardware Overflow Detection in Streaming Mode
 
 **Status:** Proposed
 **Priority:** Medium
@@ -220,80 +220,15 @@ end
 
 ---
 
-### Scan Module: Clarify Counter Logic and State Transition Timing
+## 3. Code Quality and Maintainability
 
-**Status:** Proposed
-**Priority:** Low
-**Estimated Effort:** 2-3 hours (refactoring + verification)
-**Branch Context:** scan_module_dev_johannes_filtering_tests
-
-#### Current Situation
-
-The FPGA counter increment logic and state transition conditions are inconsistent, creating confusion:
-
-**Counter increments** (`scan_new.v:418, 421, 428-429`):
-```verilog
-S_TRIGGERING: if (trigger_counter < reg_trigger_length) trigger_counter <= trigger_counter + 1;
-S_SETTLING:   if (settling_counter < reg_settling_time) settling_counter <= settling_counter + 1;
-S_ACQUIRING:  if (dwell_counter < reg_dwell_time) dwell_counter <= dwell_counter + 1;
-```
-
-**State transitions** (`scan_new.v:348-355`):
-```verilog
-S_TRIGGERING: if (reg_trigger_length == 0) next_state = S_SETTLING;
-              else if (trigger_counter >= reg_trigger_length - 1) next_state = S_SETTLING;
-```
-
-The counter stops when it reaches the target value (due to `<` condition), but the state transitions when the counter is one less than the target. While functionally correct, this is error-prone and hard to maintain.
-
-#### Proposed Implementation
-
-**Option 1: Counter reaches target** (more intuitive)
-```verilog
-// Counters count up to and including the target value
-S_TRIGGERING: if (trigger_counter <= reg_trigger_length) trigger_counter <= trigger_counter + 1;
-
-// Transition when counter equals target
-S_TRIGGERING: if (reg_trigger_length == 0) next_state = S_SETTLING;
-              else if (trigger_counter == reg_trigger_length) next_state = S_SETTLING;
-```
-
-**Option 2: Counter reaches target - 1** (current behavior, but clarified)
-```verilog
-// Explicitly document that counters count from 0 to target-1
-// Add comments explaining the off-by-one is intentional
-S_TRIGGERING: if (trigger_counter < reg_trigger_length) trigger_counter <= trigger_counter + 1;
-              // Counter reaches reg_trigger_length - 1 on the last cycle
-
-S_TRIGGERING: if (reg_trigger_length == 0) next_state = S_SETTLING;
-              else if (trigger_counter >= reg_trigger_length - 1) next_state = S_SETTLING;
-              // Transition when counter hits target - 1 (meaning target cycles have elapsed)
-```
-
-#### Benefits
-
-1. **Code clarity:** Eliminates confusion about counter behavior
-2. **Maintainability:** Future modifications less likely to introduce off-by-one errors
-3. **Documentation:** Clear intent for timing behavior
-
-#### Implementation Checklist
-
-1. **Choose implementation approach** (Option 1 or 2)
-2. **Update Verilog** (`pyrpl/fpga/rtl/scan_new.v`)
-   - [ ] Refactor counter increment logic (lines 418, 421, 428-429)
-   - [ ] Refactor state transition logic (lines 348-355)
-   - [ ] Add comprehensive comments explaining timing
-3. **Verification**
-   - [ ] Create testbench to verify timing for various counter values (0, 1, 10, 1000)
-   - [ ] Confirm trigger pulse width matches `reg_trigger_length`
-   - [ ] Test edge cases (zero-length phases)
-4. **Documentation**
-   - [ ] Update Verilog header comments
-   - [ ] Document counter behavior in CLAUDE.md
+(No items currently proposed)
 
 ---
 
-### Scan Module: Enforce Mutual Exclusion Between Scan and Streaming Modes
+## 4. Safety and Error Handling
+
+### 4.1. Scan Module: Enforce Mutual Exclusion Between Scan and Streaming Modes
 
 **Status:** Proposed
 **Priority:** High
@@ -307,11 +242,11 @@ The scan FSM prevents starting a scan while streaming is active (`scan_new.v:344
 S_IDLE: if (reg_start_cmd && reg_num_steps > 0 && !reg_stream_enable) next_state = S_START_STEP;
 ```
 
-However, there's no reverse check—you can start streaming while a scan is running. Both modes share the count BRAM (`ram_valid_samples`):
-- **Scan mode:** Writes sample counts at `step_counter` address (`scan_new.v:530`)
-- **Stream mode:** Writes demod samples at `reg_stream_wr_ptr` address (`scan_new.v:534`)
+However, there's no reverse check—you can start streaming while a scan is running. Both modes share the data3 BRAM (`ram_data3`):
+- **Scan mode:** Writes sample counts at `step_counter` address (`scan_new.v:532`)
+- **Stream mode:** Writes demod samples at `reg_stream_wr_ptr` address (`scan_new.v:536`)
 
-If both write simultaneously, data corruption occurs due to the write arbiter priority (`scan_new.v:528-537`).
+If both write simultaneously, data corruption occurs due to the write arbiter priority (`scan_new.v:523-538`).
 
 #### Proposed Implementation
 
@@ -398,7 +333,7 @@ def start(self):
 
 ---
 
-### Scan Module: Add Safety Check to stream_reset During Active Scan
+### 4.2. Scan Module: Add Safety Check to stream_reset During Active Scan
 
 **Status:** Proposed
 **Priority:** Medium
@@ -471,7 +406,7 @@ def stream_start(self, input_source="demod"):
 
 ---
 
-### Scan Module: Add Input Validation for Configuration Parameters
+### 4.3. Scan Module: Add Input Validation for Configuration Parameters
 
 **Status:** Proposed
 **Priority:** Medium
@@ -599,7 +534,9 @@ def start(self):
 
 ---
 
-### Scan Module: Improve Streaming Mode Documentation
+## 5. Documentation Improvements
+
+### 5.1. Scan Module: Improve Streaming Mode Documentation
 
 **Status:** Proposed
 **Priority:** Low
@@ -706,7 +643,9 @@ The accumulated data can then be read back and averaged in Python.
 
 ---
 
-### Scan Module: Address Potential Ring Buffer Race Condition
+## 6. Advanced Optimizations
+
+### 6.1. Scan Module: Address Potential Ring Buffer Race Condition
 
 **Status:** Proposed
 **Priority:** Low
@@ -838,7 +777,7 @@ else:
 
 ---
 
-### Scan Module: Clarify BRAM Write Priority and Add Safeguards
+### 6.2. Scan Module: Clarify BRAM Write Priority and Add Safeguards
 
 **Status:** Proposed
 **Priority:** Low
@@ -847,24 +786,24 @@ else:
 
 #### Current Situation
 
-The count BRAM write arbiter gives priority to scan FSM over streaming (`scan_new.v:527-537`):
+The data3 BRAM write arbiter gives priority to scan FSM over streaming (`scan_new.v:523-538`):
 
 ```verilog
 always @(*) begin
     // Default no write
-    cnt_we_mux    = 1'b0;
-    cnt_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
-    cnt_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
+    data3_we_mux    = 1'b0;
+    data3_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
+    data3_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
 
     // Priority: scan write over stream write
     if (bram_wr_en) begin
-        cnt_we_mux    = 1'b1;
-        cnt_waddr_mux = bram_wr_addr;
-        cnt_wdata_mux = bram_wr_data_count;
+        data3_we_mux    = 1'b1;
+        data3_waddr_mux = bram_wr_addr;
+        data3_wdata_mux = bram_wr_data_data3;
     end else if (stream_wr_en) begin
-        cnt_we_mux    = 1'b1;
-        cnt_waddr_mux = reg_stream_wr_ptr;
-        cnt_wdata_mux = demod_input_i[31:0];
+        data3_we_mux    = 1'b1;
+        data3_waddr_mux = reg_stream_wr_ptr;
+        data3_wdata_mux = demod_input_i[31:0];
     end
 end
 ```
@@ -920,7 +859,7 @@ ADDR_STATUS: sys_rdata <= {28'b0, reg_bram_conflict_error,
 ...
 
 **BRAM Write Priority:**
-The count BRAM is shared between scan and streaming modes:
+The data3 BRAM is shared between scan and streaming modes:
 - Scan mode: Writes sample counts at completion of each step
 - Streaming mode: Writes demodulated samples continuously
 

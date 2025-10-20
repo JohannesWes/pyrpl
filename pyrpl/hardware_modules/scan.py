@@ -2,13 +2,19 @@
 """
 Scan Module for Pyrpl.
 
-This module controls the FPGA scan block, enabling automated sweeps.
-For each step:
+This module controls the FPGA scan block, providing two main operating modes:
+
+================================================================================
+1. SCAN MODE - Automated Sweeps with Triggered Acquisition
+================================================================================
+
+Performs automated sweeps across multiple steps. For each step:
 1. Outputs a trigger pulse on a *fixed* digital output pin (exp_p_io[7]).
 2. Waits for a settling time.
 3. Acquires and accumulates data from either ADC input, IQ demodulator,
    or demodulated lock-in output for a dwell time.
-4. Stores the 64-bit accumulated sum in BRAM.
+4. Stores the 64-bit accumulated sum in BRAM (LSB/MSB banks).
+5. Stores the sample count in the data3 BRAM bank.
 
 The accumulated data can then be read back and averaged in Python.
 
@@ -20,14 +26,84 @@ The accumulated data can then be read back and averaged in Python.
     but it will NOT change the physical output pin without modifications
     to the FPGA design (`red_pitaya_hk.v`).
 
-**Input Modes:**
-*   **adc:** Direct 14-bit ADC input at 125 MHz
-*   **iq0:** 24-bit IQ demodulator output at 125 MHz
+================================================================================
+2. STREAM MODE - Continuous High-Speed Data Acquisition
+================================================================================
+
+Provides continuous streaming of demodulated lock-in data at ~30.5 kHz without
+triggering or step sequencing. This mode is designed for real-time monitoring
+and high-throughput data collection.
+
+**Stream Architecture:**
+*   Uses the data3 BRAM (4096 x 32-bit words) as a circular ring buffer
+*   FPGA writes incoming demodulated samples to incrementing addresses
+*   Python reads data in batches using efficient block reads
+*   Independent read/write pointers prevent data loss (with overflow detection)
+
+**Stream vs Scan Mode:**
+*   Mutually exclusive: streaming blocks scan functionality (shared BRAM)
+*   Stream mode only supports 'demod' input (32-bit @ ~30.5 kHz)
+*   No triggering, settling, or accumulation - raw samples streamed directly
+*   Optimized for minimal latency and maximum throughput
+
+**Performance Characteristics:**
+*   Sample rate: ~30.5 kHz (125 MHz / 4096 decimation)
+*   Buffer depth: 4096 samples (~134 ms at full rate)
+*   Typical read latency: 5-20 ms depending on batch size and network
+*   Overflow protection: Automatic detection and recovery with warning
+
+**Typical Streaming Workflow:**
+```python
+# 1. Start streaming
+scan.stream_start()
+
+# 2. Continuously read data
+for batch in scan.stream_iter(poll_interval=0.01, batch=256):
+    process_data(batch)  # batch is np.ndarray of int32 samples
+
+# 3. Or manual reads
+while acquiring:
+    data = scan.stream_read(max_samples=512)
+    if data.size > 0:
+        process_data(data)
+    time.sleep(0.005)
+
+# 4. Stop streaming
+scan.stream_stop()
+```
+
+**Stream API Methods:**
+*   `stream_start()` - Enable streaming (resets FPGA pointers)
+*   `stream_stop()` - Disable streaming
+*   `stream_status()` - Get (active, overflow, wr_ptr, samples_written)
+*   `stream_read()` - Read available samples (non-blocking)
+*   `stream_iter()` - Generator yielding batches until stopped
+
+**Overflow Handling:**
+*   Software tracks read position to detect if FPGA writer has wrapped
+*   If overflow detected: automatic reset, data loss warning logged
+*   Mitigation: increase read frequency or batch size to keep up with rate
+
+================================================================================
+Input Modes (Both Scan and Stream)
+================================================================================
+*   **adc:** Direct 14-bit ADC input at 125 MHz (scan only)
+*   **iq0:** 24-bit IQ demodulator output at 125 MHz (scan only)
 *   **demod:** 32-bit demodulated lock-in output, valid every 4096 cycles (≈30.5 kHz)
 
-    When using 'demod' mode, the dwell_time still represents the total acquisition
-    time in clock cycles, but data is only accumulated when the valid signal is high.
-    The actual number of samples accumulated per step is stored in BRAM and used for averaging.
+    When using 'demod' mode in scan, the dwell_time still represents the total
+    acquisition time in clock cycles, but data is only accumulated when the valid
+    signal is high. The actual number of samples accumulated per step is stored
+    in the data3 BRAM bank and used for averaging.
+
+================================================================================
+BRAM Banks (Memory-Mapped Storage)
+================================================================================
+*   **LSB Bank (0x10000-0x1FFFF):** Lower 32 bits of 64-bit accumulator (scan mode)
+*   **MSB Bank (0x20000-0x2FFFF):** Upper 32 bits of 64-bit accumulator (scan mode)
+*   **Data3 Bank (0x30000-0x3FFFF):** Dual-purpose 4096 x 32-bit storage
+    - Scan mode: Stores sample counts for each step (for accurate averaging)
+    - Stream mode: Ring buffer for continuous demodulated data streaming
 """
 import time
 import numpy as np
@@ -63,14 +139,14 @@ ADDR_TRIGGER_LENGTH = 0x10
 ADDR_TRIGGER_PIN_SEL = 0x14
 ADDR_CURRENT_STEP = 0x18
 ADDR_INPUT_SELECT = 0x1C  # Input source selection
-# Streaming control/status (demod ring buffer in count BRAM)
+# Streaming control/status (demod ring buffer in data3 BRAM)
 ADDR_STREAM_CONTROL = 0x20  # bit0 enable, bit1 reset
 ADDR_STREAM_STATUS  = 0x24  # bit0 active, bit1 overflow
 ADDR_STREAM_WR_PTR  = 0x28  # write pointer (index in BRAM)
 ADDR_STREAM_SAMPLES = 0x2C  # total samples written
 BRAM_LSB_BASE_ADDR = 0x10000  # As per Verilog: Module Base + 0x10000
 BRAM_MSB_BASE_ADDR = 0x20000  # As per Verilog: Module Base + 0x20000
-BRAM_COUNT_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000
+BRAM_DATA3_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000 (sample counts or stream data)
 
 # Control Register Bits
 CONTROL_START_BIT = 0
@@ -231,7 +307,7 @@ class Scan(HardwareModule):
         """Enable continuous streaming of demodulated samples into the BRAM ring buffer.
 
         Notes:
-            - Uses the count BRAM region (32-bit words) as a circular buffer.
+            - Uses the data3 BRAM region (32-bit words) as a circular buffer.
             - Blocks scanning functionality while active (shared memory).
         """
         if input_source != "demod":
@@ -330,7 +406,7 @@ class Scan(HardwareModule):
         if first_len > 0:
             if enable_timing:
                 _t1 = time.time()
-            base = BRAM_COUNT_BASE_ADDR + rd * 4
+            base = BRAM_DATA3_BASE_ADDR + rd * 4
             segs.append(self._reads(base, first_len))
             if enable_timing:
                 _timings['first_reads'] = time.time() - _t1
@@ -339,7 +415,7 @@ class Scan(HardwareModule):
         if rem > 0:
             if enable_timing:
                 _t2 = time.time()
-            base = BRAM_COUNT_BASE_ADDR  # wrapped
+            base = BRAM_DATA3_BASE_ADDR  # wrapped
             segs.append(self._reads(base, rem))
             if enable_timing:
                 _timings['second_reads'] = time.time() - _t2
@@ -472,7 +548,7 @@ class Scan(HardwareModule):
 
         Args:
             average (bool): If True (default), divides the accumulated sums
-                            by the per-step valid sample count (from count BRAM).
+                            by the per-step valid sample count (from data3 BRAM).
                             This handles all input modes:
                             - For 'adc'/'iq0': count equals dwell_time in cycles.
                             - For 'demod': count equals actual valid samples acquired.
@@ -518,7 +594,7 @@ class Scan(HardwareModule):
             # module's base address (self.addr_base). Thus only provide relative offset here.
             lsb_data = self._reads(BRAM_LSB_BASE_ADDR, n_steps)
             msb_data = self._reads(BRAM_MSB_BASE_ADDR, n_steps)
-            count_data = self._reads(BRAM_COUNT_BASE_ADDR, n_steps)
+            count_data = self._reads(BRAM_DATA3_BASE_ADDR, n_steps)
 
             # --- Validation of received data ---
             if lsb_data is None or len(lsb_data) != n_steps:
@@ -546,7 +622,7 @@ class Scan(HardwareModule):
         logger.info("Data readout complete.")
 
         if average:
-            logger.info("Averaging data using per-step sample counts from count BRAM.")
+            logger.info("Averaging data using per-step sample counts from data3 BRAM.")
             data = data_accum.astype(np.float64)
             count = count_data.astype(np.float64)
             avg_data = np.zeros_like(data)
