@@ -380,26 +380,25 @@ generate for (j = 3; j < 4; j = j+1) begin
 end
 endgenerate
 assign trig_o = trig_signal;
+wire signed [24-1:0] iir_output;
 
 // //IIR module 
-// generate for (j = 4; j < 5; j = j+1) begin
-//     red_pitaya_iir_block iir (
+ generate for (j = 4; j < 5; j = j+1) begin
+  red_pitaya_iir_block iir (
 // 	     // data
-// 	     .clk_i        (  clk_i          ),  // clock
-// 	     .rstn_i       (  rstn_i         ),  // reset - active low
-// 	     .dat_i        (  input_signal [j] ),  // input data
-// 	     .dat_o        (  output_direct[j]),  // output data
-
-// 		 //communincation with PS
-// 		 .addr ( sys_addr[16-1:0] ),
-// 		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-// 		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-// 		 .ack  ( module_ack[j] ),
-// 		 .rdata (module_rdata[j]),
-// 	     .wdata (sys_wdata)
-//       );
-// 	  assign output_signal[j] = output_direct[j];
-// end endgenerate
+	     .clk_i        (  clk_i          ),  // clock
+	     .rstn_i       (  rstn_i         ),  // reset - active low
+	     .dat_i        (  inphase_iq_demod ),  // input data
+	     .dat_o        ( iir_output ),  // output data
+ 		 //communincation with PS
+ 		 .addr ( sys_addr[16-1:0] ),
+ 		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+ 		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+		 .ack  ( module_ack[j] ),
+		 .rdata (module_rdata[j]),
+ 	     .wdata (sys_wdata)
+      );
+ end endgenerate
 
 
 // additional IQ wires
@@ -436,7 +435,7 @@ generate for (j = 5; j < 6; j = j+1) begin
        .wdata (sys_wdata)
      );
 end endgenerate
-
+/*
 //IQ modules
 generate for (j = 6; j < 7; j = j+1) begin
    red_pitaya_iq_block 
@@ -492,15 +491,16 @@ generate for (j = 7; j < 8; j = j+1) begin
        .wdata (sys_wdata)
      );
 end endgenerate
+*/
 
 assign iq0_phase_o = iq_phase[5];
-assign iq1_phase_o = iq_phase[6];
-assign iq2_phase_o = iq_phase[7];
+//assign iq1_phase_o = iq_phase[6];
+//assign iq2_phase_o = iq_phase[7];
 
 assign iq0_sin_o = iq_sin[5];
-assign iq1_sin_o = iq_sin[6];
-assign iq2_sin_o = iq_sin[7];
+//assign iq1_sin_o = iq_sin[6];
+//assign iq2_sin_o = iq_sin[7];
 
-assign inphase_iq_demod_o = inphase_iq_demod;
+assign inphase_iq_demod_o = iir_output;
 
 endmodule
