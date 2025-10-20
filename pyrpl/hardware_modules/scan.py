@@ -63,6 +63,11 @@ ADDR_TRIGGER_LENGTH = 0x10
 ADDR_TRIGGER_PIN_SEL = 0x14
 ADDR_CURRENT_STEP = 0x18
 ADDR_INPUT_SELECT = 0x1C  # Input source selection
+# Streaming control/status (demod ring buffer in count BRAM)
+ADDR_STREAM_CONTROL = 0x20  # bit0 enable, bit1 reset
+ADDR_STREAM_STATUS  = 0x24  # bit0 active, bit1 overflow
+ADDR_STREAM_WR_PTR  = 0x28  # write pointer (index in BRAM)
+ADDR_STREAM_SAMPLES = 0x2C  # total samples written
 BRAM_LSB_BASE_ADDR = 0x10000  # As per Verilog: Module Base + 0x10000
 BRAM_MSB_BASE_ADDR = 0x20000  # As per Verilog: Module Base + 0x20000
 BRAM_COUNT_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000
@@ -136,7 +141,7 @@ class Scan(HardwareModule):
     _widget_class = ScanWidget
     addr_base = 0x40500000 # Corresponds to system bus port 5
     name = 'scan'
-    #_widget_class = ScanWidget # TODO: Create a widget later if needed
+    #_widget_class = ScanWidget # Create a widget later if needed
 
     _setup_attributes = ["num_steps", "dwell_time", "settling_time",
                          "trigger_length", "trigger_pin_select", "input_select"]
@@ -189,6 +194,194 @@ class Scan(HardwareModule):
                                       "'iq0' for 24-bit IQ demodulator output at 125 MHz, "
                                       "'demod' for 32-bit lock-in demodulated output (valid every 4096 cycles).")
 
+    # ---------------- Streaming (32-bit @ ~31 kHz) ----------------
+    def _stream_ctrl_write(self, enable=None, reset=False):
+        """Drive the streaming control register (``ADDR_STREAM_CONTROL``).
+
+        Register layout (write side):
+        - bit 0 (``ENABLE``): 1 = enable streaming; 0 = disable.
+        - bit 1 (``RESET``): write-one-to-pulse reset of the stream engine
+        (clears pointers/counters in FPGA). Hardware clears/de-latches it.
+
+        Read-modify-write behaviour:
+        - If ``enable`` is ``None``, the current enable state (bit 0) is preserved.
+        This lets callers issue a reset pulse without unintentionally toggling
+        the stream.
+        - If ``enable`` is ``True``/``False``, bit 0 is explicitly set/cleared.
+        - If ``reset`` is ``True``, bit 1 is OR'ed in to request a reset pulse.
+
+        Args:
+        enable: If ``True`` enable streaming; if ``False`` disable streaming;
+        if ``None`` (default) keep the current enable state (bit 0).
+        reset: If ``True``, pulse the RESET bit (bit 1). Defaults to ``False``.
+        """
+        val = 0
+        if enable is None:
+            # Read-modify-write to preserve current enable state
+            cur = self._read(ADDR_STREAM_CONTROL)
+            val |= (cur & 0x1)
+        else:
+            val |= 0x1 if enable else 0x0
+        if reset:
+            val |= 0x2
+        self._write(ADDR_STREAM_CONTROL, val)
+
+
+    def stream_start(self, input_source="demod"):
+        """Enable continuous streaming of demodulated samples into the BRAM ring buffer.
+
+        Notes:
+            - Uses the count BRAM region (32-bit words) as a circular buffer.
+            - Blocks scanning functionality while active (shared memory).
+        """
+        if input_source != "demod":
+            logger.warning("Streaming currently only supported for 'demod'. Forcing input_select to 'demod'.")
+        self.input_select = 'demod'
+        # Reset FPGA streaming engine and enable
+        self._stream_ctrl_write(enable=True, reset=True)
+        # Initialize software reader state aligned to current writer
+        _, _, wrp, total_samples = self.stream_status()
+        self._stream_rd_ptr = int(wrp)
+        self._stream_total_read = int(total_samples)
+        self._stream_active = True
+
+
+    def stream_stop(self):
+        """Disable streaming and clear software-side counters."""
+        self._stream_ctrl_write(enable=False)
+        self._stream_active = False
+
+
+    def stream_status(self):
+        """Return tuple (active, overflow, wr_ptr, samples_written).
+        
+        Optimized to read all 3 registers (STATUS, WR_PTR, SAMPLES) in a single
+        bulk read operation to reduce network overhead. This only works when the three
+        register adresses are consecutive (as they are here).
+        """
+        # Read 3 consecutive 32-bit registers starting at ADDR_STREAM_STATUS
+        # Addresses: 0x24 (STATUS), 0x28 (WR_PTR), 0x2C (SAMPLES)
+        values = self._reads(ADDR_STREAM_STATUS, 3)
+        status = int(values[0])
+        wr_ptr = int(values[1])
+        cnt = int(values[2])
+        active = bool(status & 0x1)
+        overflow = bool((status >> 1) & 0x1) # hardware overflow flag not currently working/updated correctly in FPGA
+        return active, overflow, wr_ptr, cnt
+    
+
+    def stream_read(self, max_samples=None, enable_timing=False, check_overflow_every=1):
+        """Read available demodulated samples from the ring buffer.
+
+        Args:
+            max_samples (int|None): Optional limit on number of <samples to read.
+            enable_timing (bool): If True, log detailed timing information.
+            check_overflow_every (int): Check for overflow every N calls (default 1 = every call).
+        Returns:
+            np.ndarray int32 of shape (n,) with the read samples. If accessed via RPyC,
+            this will be a netref and the user must convert it using data.tolist() to get a local array.
+        """
+        if enable_timing:
+            _t_start = time.time()
+            _timings = {}
+        
+        if not getattr(self, '_stream_active', False):
+            return np.array([], dtype=np.int32)
+
+        # Track call count for periodic overflow checking
+        call_count = getattr(self, '_stream_read_calls', 0) + 1
+        self._stream_read_calls = call_count
+        check_overflow = (call_count % check_overflow_every) == 0
+
+        if enable_timing:
+            _t0 = time.time()
+        active, overflow, wrp, total_written = self.stream_status()
+        if enable_timing:
+            _timings['stream_status'] = time.time() - _t0
+            
+        # Software overflow detection: if writer advanced by >= depth since last read
+        depth = 2**MAX_STEPS_BITS
+        if check_overflow:
+            delta = (int(total_written) - int(getattr(self, '_stream_total_read', 0))) & 0xFFFFFFFF
+            if delta >= depth or overflow:
+                logger.warning("FPGA streaming overflow flagged. Consider reading faster. Resetting stream.")
+                # Clear overflow via reset pulse and restart from current write pointer
+                self._stream_ctrl_write(enable=True, reset=True)
+                _, _, wrp2, total2 = self.stream_status()
+                self._stream_rd_ptr = int(wrp2)
+                self._stream_total_read = int(total2)
+                return np.array([], dtype=np.int32)
+
+        # Compute number available between software read pointer and FPGA write pointer
+        rd = getattr(self, '_stream_rd_ptr', 0) % depth
+        if wrp >= rd:
+            avail = wrp - rd
+        else:
+            avail = (depth - rd) + wrp
+
+        if avail == 0:
+            return np.array([], dtype=np.int32)
+        if max_samples is not None:
+            avail = min(avail, int(max_samples))
+
+        # We may need to read in two segments (until end, then wrap)
+        first_len = min(avail, depth - rd)
+        segs = []
+        if first_len > 0:
+            if enable_timing:
+                _t1 = time.time()
+            base = BRAM_COUNT_BASE_ADDR + rd * 4
+            segs.append(self._reads(base, first_len))
+            if enable_timing:
+                _timings['first_reads'] = time.time() - _t1
+                _timings['first_len'] = first_len
+        rem = avail - first_len
+        if rem > 0:
+            if enable_timing:
+                _t2 = time.time()
+            base = BRAM_COUNT_BASE_ADDR  # wrapped
+            segs.append(self._reads(base, rem))
+            if enable_timing:
+                _timings['second_reads'] = time.time() - _t2
+                _timings['second_len'] = rem
+        
+        # Concatenate and cast
+        if enable_timing:
+            _t3 = time.time()
+        data = np.concatenate([np.asarray(s, dtype=np.uint32) for s in segs]) if len(segs) > 1 else np.asarray(segs[0], dtype=np.uint32)
+        data = data.view(np.int32)
+        if enable_timing:
+            _timings['concatenate_cast'] = time.time() - _t3
+
+        # Advance software read pointer
+        self._stream_rd_ptr = (rd + avail) % depth
+        self._stream_total_read = getattr(self, '_stream_total_read', 0) + avail
+        
+        if enable_timing:
+            _timings['total'] = time.time() - _t_start
+            logger.debug(f"stream_read timing (samples={avail}): " + 
+                        ", ".join([f"{k}={v*1000:.2f}ms" for k, v in _timings.items()]))
+        
+        return data
+    
+
+    def stream_iter(self, poll_interval=0.005, batch=256):
+        """Yield batches of samples as they arrive. Stops when stream_stop() is called.
+
+        Args:
+            poll_interval (float): sleep between polls [s]
+            batch (int): preferred batch size
+        Yields:
+            np.ndarray int32
+        """
+        while getattr(self, '_stream_active', False):
+            arr = self.stream_read(max_samples=batch)
+            if arr.size:
+                yield arr
+            else:
+                time.sleep(poll_interval)
+
+
     # --- Control Methods ---
     def _write_control_bit(self, bit_position, value):
         """
@@ -208,6 +401,7 @@ class Scan(HardwareModule):
              control_val = 1 << bit_position
         self._write(ADDR_CONTROL, control_val)
 
+
     def start(self):
         """
         Starts the sweep sequence.
@@ -225,6 +419,7 @@ class Scan(HardwareModule):
         self._check_overflow()
         logger.info("Starting scan sweep with input source: %s...", self.input_select)
         self._write_control_bit(CONTROL_START_BIT, True)
+        
 
     def stop(self):
         """

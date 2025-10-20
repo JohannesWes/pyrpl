@@ -71,6 +71,11 @@ localparam ADDR_TRIGGER_LENGTH  = 20'h00010; // R/W (cycles)
 localparam ADDR_TRIGGER_PIN_SEL = 20'h00014; // R/W
 localparam ADDR_CURRENT_STEP    = 20'h00018; // Read only
 localparam ADDR_INPUT_SELECT    = 20'h0001C; // R/W Input source selection
+// Streaming control/status (demodulated data ring buffer)
+localparam ADDR_STREAM_CONTROL  = 20'h00020; // W/R: bit0 enable (level), bit1 reset (pulse)
+localparam ADDR_STREAM_STATUS   = 20'h00024; // R: bit0 active, bit1 overflow
+localparam ADDR_STREAM_WR_PTR   = 20'h00028; // R: current write pointer (mod BRAM depth)
+localparam ADDR_STREAM_SAMPLES  = 20'h0002C; // R: total samples written since last reset
 
 // Input selection values
 localparam INPUT_SELECT_ADC   = 2'b00;
@@ -116,6 +121,14 @@ reg [1:0]                   reg_input_select;       // Input selection register
 reg                         reg_start_cmd;
 reg                         reg_stop_cmd;
 reg                         reg_reset_cmd;
+
+// Streaming control/status
+reg                         reg_stream_enable;       // Streaming enable (level)
+reg                         reg_stream_reset_cmd;    // One-cycle reset pulse for streaming engine
+reg                         reg_stream_active;       // Indicates streaming is active
+reg                         reg_stream_overflow;     // Overflow flag (if writer lapped reader - conservative)
+reg [BRAM_ADDR_BITS-1:0]    reg_stream_wr_ptr;       // Write pointer into BRAM (count bank)
+reg [32-1:0]                reg_stream_sample_cnt;   // Total samples written since last stream reset
 
 // Valid sample counter for demodulated mode
 reg [32-1:0]                reg_valid_samples;      // Count of valid samples accumulated
@@ -252,13 +265,17 @@ always @(posedge clk) begin
         reg_start_cmd          <= 1'b0;
         reg_stop_cmd           <= 1'b0;
         reg_reset_cmd          <= 1'b0;
+    // Stream defaults
+    reg_stream_enable      <= 1'b0;
+    reg_stream_reset_cmd   <= 1'b0;
     end else begin
         // Clear command flags after one cycle
         reg_start_cmd <= 1'b0;
         reg_stop_cmd  <= 1'b0;
         reg_reset_cmd <= 1'b0;
+        reg_stream_reset_cmd <= 1'b0;
 
-        if (sys_wen && !reg_busy_flag) begin // Only allow config writes when not busy
+        if (sys_wen && !reg_busy_flag) begin // Only allow scan config writes when not busy
             case (reg_addr)
                 ADDR_CONTROL: begin
                     if (sys_wdata[0]) reg_start_cmd <= 1'b1;
@@ -272,6 +289,11 @@ always @(posedge clk) begin
                 ADDR_TRIGGER_LENGTH:  reg_trigger_length     <= sys_wdata;
                 ADDR_TRIGGER_PIN_SEL: reg_trigger_pin_select <= sys_wdata[PIN_SELECT_BITS-1:0];
                 ADDR_INPUT_SELECT:    reg_input_select       <= sys_wdata[1:0];
+                ADDR_STREAM_CONTROL: begin
+                    // Level-sensitive enable, pulse on bit1 for reset
+                    reg_stream_enable    <= sys_wdata[0];
+                    if (sys_wdata[1])    reg_stream_reset_cmd <= 1'b1;
+                end
                 default: ;
             endcase
         end
@@ -319,7 +341,7 @@ always @(*) begin
     next_state = current_state;
     
     case (current_state)
-        S_IDLE:         if (reg_start_cmd && reg_num_steps > 0) next_state = S_START_STEP;
+        S_IDLE:         if (reg_start_cmd && reg_num_steps > 0 && !reg_stream_enable) next_state = S_START_STEP;
         
         S_START_STEP:   next_state = S_TRIGGERING;
         
@@ -369,6 +391,11 @@ always @(posedge clk) begin
         accum            <= {ACCUM_WIDTH{1'b0}};
         reg_current_step <= {MAX_STEPS_BITS{1'b0}};
         reg_valid_samples <= 32'b0;
+    // Streaming state
+    reg_stream_active   <= 1'b0;
+    reg_stream_overflow <= 1'b0;
+    reg_stream_wr_ptr   <= {BRAM_ADDR_BITS{1'b0}};
+    reg_stream_sample_cnt <= 32'b0;
     end else begin
         // Reset conditions
         if (current_state == S_IDLE) begin // Reset counters when idle
@@ -425,6 +452,31 @@ always @(posedge clk) begin
             reg_current_step <= {MAX_STEPS_BITS{1'b0}};
             reg_valid_samples <= 32'b0;
         end
+
+        // ------------------------------------------------------------------
+        // Streaming engine (demodulated input -> ring buffer in count BRAM)
+        // ------------------------------------------------------------------
+        // Reset streaming engine
+        if (reg_stream_reset_cmd || !reg_stream_enable) begin
+            reg_stream_active     <= 1'b0;
+            reg_stream_overflow   <= 1'b0;
+            reg_stream_wr_ptr     <= {BRAM_ADDR_BITS{1'b0}};
+            reg_stream_sample_cnt <= 32'b0;
+        end else if (reg_stream_enable) begin
+            reg_stream_active <= 1'b1;
+            // Only support demodulated input streaming (guard anyway)
+            if (reg_input_select == INPUT_SELECT_DEMOD) begin
+                if (demod_input_valid_i) begin
+                    // Increment pointer and sample counter; actual memory write handled in unified write block
+                    reg_stream_wr_ptr <= reg_stream_wr_ptr + 1'b1;
+                    reg_stream_sample_cnt <= reg_stream_sample_cnt + 1'b1;
+                    // Optional sticky overflow heuristic on wrap
+                    if (&reg_stream_wr_ptr) begin
+                        reg_stream_overflow <= reg_stream_overflow; // TODO: Check this. Wie funktioniert der overflow-Mechanismus, ist der überhaupt implementiert?
+                    end
+                end
+            end
+        end
     end
 end
 
@@ -450,9 +502,9 @@ assign trigger_o = trigger_pulse_active; // Connect internal signal to output
 //-----------------------------------------------------------------------------
 // BRAM Implementation (Using inferred dual-port BRAM)
 //-----------------------------------------------------------------------------
-reg [BUS_DATA_WIDTH-1:0] ram_lsb [0:BRAM_DEPTH-1];
-reg [BUS_DATA_WIDTH-1:0] ram_msb [0:BRAM_DEPTH-1];
-reg [BUS_DATA_WIDTH-1:0] ram_valid_samples [0:BRAM_DEPTH-1];  // Store valid sample count per step
+(* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_lsb [0:BRAM_DEPTH-1];
+(* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_msb [0:BRAM_DEPTH-1];
+(* ram_style = "block" *) reg [BUS_DATA_WIDTH-1:0] ram_valid_samples [0:BRAM_DEPTH-1];  // Store valid sample count or stream samples
 
 // Port A: Write Port (Synchronous) - Controlled by State Machine
 assign bram_wr_addr     = step_counter;
@@ -460,11 +512,39 @@ assign bram_wr_data_lsb = accum[BUS_DATA_WIDTH-1:0];
 assign bram_wr_data_msb = accum[ACCUM_WIDTH-1:BUS_DATA_WIDTH];
 assign bram_wr_data_count = reg_valid_samples;  // Assign valid sample count
 
+// Streaming write enable (demod stream into count BRAM ring buffer)
+wire stream_wr_en = reg_stream_enable && (reg_input_select == INPUT_SELECT_DEMOD) && demod_input_valid_i;
+// Muxed write controls for count BRAM (single-port write template)
+reg                       cnt_we_mux;
+reg [BRAM_ADDR_BITS-1:0]  cnt_waddr_mux;
+reg [BUS_DATA_WIDTH-1:0]  cnt_wdata_mux;
+
+always @(*) begin
+    // Default no write
+    cnt_we_mux    = 1'b0;
+    cnt_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
+    cnt_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
+    // Priority: scan write over stream write
+    if (bram_wr_en) begin
+        cnt_we_mux    = 1'b1;
+        cnt_waddr_mux = bram_wr_addr;
+        cnt_wdata_mux = bram_wr_data_count;
+    end else if (stream_wr_en) begin
+        cnt_we_mux    = 1'b1;
+        cnt_waddr_mux = reg_stream_wr_ptr;
+        cnt_wdata_mux = demod_input_i[31:0];
+    end
+end
+
 always @(posedge clk) begin
+    // LSB/MSB arrays written only by scan FSM
     if (bram_wr_en) begin
         ram_lsb[bram_wr_addr] <= bram_wr_data_lsb;
         ram_msb[bram_wr_addr] <= bram_wr_data_msb;
-        ram_valid_samples[bram_wr_addr] <= bram_wr_data_count;  // Store valid sample count
+    end
+    // Count array uses muxed single-port write style (scan or stream)
+    if (cnt_we_mux) begin
+        ram_valid_samples[cnt_waddr_mux] <= cnt_wdata_mux;
     end
 end
 
@@ -578,6 +658,10 @@ always @(posedge clk) begin
                     ADDR_TRIGGER_PIN_SEL: sys_rdata <= { {(32-PIN_SELECT_BITS){1'b0}}, reg_trigger_pin_select };
                     ADDR_CURRENT_STEP:    sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_current_step };
                     ADDR_INPUT_SELECT:    sys_rdata <= { {30{1'b0}}, reg_input_select };
+                    ADDR_STREAM_CONTROL:  sys_rdata <= {30'b0, reg_stream_reset_cmd, reg_stream_enable}; // TODO: maybe group more reads into one read for time-critical tasks. Performance vs readability
+                    ADDR_STREAM_STATUS:   sys_rdata <= {30'b0, reg_stream_overflow, reg_stream_active};
+                    ADDR_STREAM_WR_PTR:   sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_stream_wr_ptr };
+                    ADDR_STREAM_SAMPLES:  sys_rdata <= reg_stream_sample_cnt;
                     default:              sys_rdata <= 32'hBADADD05; // Bad register address
         endcase
             end else begin
