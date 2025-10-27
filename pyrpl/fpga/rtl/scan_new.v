@@ -50,7 +50,7 @@
  *
  * Streaming Registers:
  * - ADDR_STREAM_CONTROL (0x20): [0]=enable (level), [1]=reset (pulse)
- * - ADDR_STREAM_STATUS (0x24):  [0]=active, [1]=overflow (reserved)
+ * - ADDR_STREAM_STATUS (0x24):  [0]=active
  * - ADDR_STREAM_WR_PTR (0x28):  Current FPGA write pointer (0-4095)
  * - ADDR_STREAM_SAMPLES (0x2C): Total samples written (32-bit counter)
  *
@@ -87,7 +87,7 @@
  *   0x18: CURRENT_STEP (read-only, current scan step index)
  *   0x1C: INPUT_SELECT (2-bit: 0=ADC, 1=IQ, 2=DEMOD)
  *   0x20: STREAM_CONTROL (bit0=enable, bit1=reset)
- *   0x24: STREAM_STATUS (bit0=active, bit1=overflow_reserved)
+ *   0x24: STREAM_STATUS (bit0=active)
  *   0x28: STREAM_WR_PTR (12-bit write pointer)
  *   0x2C: STREAM_SAMPLES (32-bit total sample counter)
  *
@@ -178,7 +178,7 @@ localparam ADDR_CURRENT_STEP    = 20'h00018; // Read only
 localparam ADDR_INPUT_SELECT    = 20'h0001C; // R/W Input source selection
 // Streaming control/status (demodulated data ring buffer in data3 BRAM)
 localparam ADDR_STREAM_CONTROL  = 20'h00020; // W/R: bit0 enable (level), bit1 reset (pulse)
-localparam ADDR_STREAM_STATUS   = 20'h00024; // R: bit0 active, bit1 overflow
+localparam ADDR_STREAM_STATUS   = 20'h00024; // R: bit0 active
 localparam ADDR_STREAM_WR_PTR   = 20'h00028; // R: current write pointer (mod BRAM depth)
 localparam ADDR_STREAM_SAMPLES  = 20'h0002C; // R: total samples written since last reset
 
@@ -231,7 +231,6 @@ reg                         reg_reset_cmd;
 reg                         reg_stream_enable;       // Streaming enable (level)
 reg                         reg_stream_reset_cmd;    // One-cycle reset pulse for streaming engine
 reg                         reg_stream_active;       // Indicates streaming is active
-reg                         reg_stream_overflow;     // Overflow flag (if writer lapped reader - conservative)
 reg [BRAM_ADDR_BITS-1:0]    reg_stream_wr_ptr;       // Write pointer into BRAM (count bank)
 reg [32-1:0]                reg_stream_sample_cnt;   // Total samples written since last stream reset
 
@@ -498,7 +497,6 @@ always @(posedge clk) begin
         reg_valid_samples <= 32'b0;
     // Streaming state
     reg_stream_active   <= 1'b0;
-    reg_stream_overflow <= 1'b0;
     reg_stream_wr_ptr   <= {BRAM_ADDR_BITS{1'b0}};
     reg_stream_sample_cnt <= 32'b0;
     end else begin
@@ -564,7 +562,6 @@ always @(posedge clk) begin
         // Reset streaming engine
         if (reg_stream_reset_cmd || !reg_stream_enable) begin
             reg_stream_active     <= 1'b0;
-            reg_stream_overflow   <= 1'b0;
             reg_stream_wr_ptr     <= {BRAM_ADDR_BITS{1'b0}};
             reg_stream_sample_cnt <= 32'b0;
         end else if (reg_stream_enable) begin
@@ -575,10 +572,6 @@ always @(posedge clk) begin
                     // Increment pointer and sample counter; actual memory write handled in unified write block
                     reg_stream_wr_ptr <= reg_stream_wr_ptr + 1'b1;
                     reg_stream_sample_cnt <= reg_stream_sample_cnt + 1'b1;
-                    // Optional sticky overflow heuristic on wrap
-                    if (&reg_stream_wr_ptr) begin
-                        reg_stream_overflow <= reg_stream_overflow; // TODO: Check this. Wie funktioniert der overflow-Mechanismus, ist der überhaupt implementiert?
-                    end
                 end
             end
         end
@@ -764,7 +757,7 @@ always @(posedge clk) begin
                     ADDR_CURRENT_STEP:    sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_current_step };
                     ADDR_INPUT_SELECT:    sys_rdata <= { {30{1'b0}}, reg_input_select };
                     ADDR_STREAM_CONTROL:  sys_rdata <= {30'b0, reg_stream_reset_cmd, reg_stream_enable}; // TODO: maybe group more reads into one read for time-critical tasks. Performance vs readability
-                    ADDR_STREAM_STATUS:   sys_rdata <= {30'b0, reg_stream_overflow, reg_stream_active};
+                    ADDR_STREAM_STATUS:   sys_rdata <= {31'b0, reg_stream_active};
                     ADDR_STREAM_WR_PTR:   sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_stream_wr_ptr };
                     ADDR_STREAM_SAMPLES:  sys_rdata <= reg_stream_sample_cnt;
                     default:              sys_rdata <= 32'hBADADD05; // Bad register address

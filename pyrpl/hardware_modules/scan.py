@@ -75,12 +75,13 @@ scan.stream_stop()
 **Stream API Methods:**
 *   `stream_start()` - Enable streaming (resets FPGA pointers)
 *   `stream_stop()` - Disable streaming
-*   `stream_status()` - Get (active, overflow, wr_ptr, samples_written)
+*   `stream_status()` - Get (active, wr_ptr, samples_written)
 *   `stream_read()` - Read available samples (non-blocking)
 *   `stream_iter()` - Generator yielding batches until stopped
 
 **Overflow Handling:**
-*   Software tracks read position to detect if FPGA writer has wrapped
+*   Software-only overflow detection by comparing sample counters
+*   Tracks if FPGA writer has advanced by >= buffer depth (4096 samples)
 *   If overflow detected: automatic reset, data loss warning logged
 *   Mitigation: increase read frequency or batch size to keep up with rate
 
@@ -316,7 +317,7 @@ class Scan(HardwareModule):
         # Reset FPGA streaming engine and enable
         self._stream_ctrl_write(enable=True, reset=True)
         # Initialize software reader state aligned to current writer
-        _, _, wrp, total_samples = self.stream_status()
+        _, wrp, total_samples = self.stream_status()
         self._stream_rd_ptr = int(wrp)
         self._stream_total_read = int(total_samples)
         self._stream_active = True
@@ -329,8 +330,8 @@ class Scan(HardwareModule):
 
 
     def stream_status(self):
-        """Return tuple (active, overflow, wr_ptr, samples_written).
-        
+        """Return tuple (active, wr_ptr, samples_written).
+
         Optimized to read all 3 registers (STATUS, WR_PTR, SAMPLES) in a single
         bulk read operation to reduce network overhead. This only works when the three
         register adresses are consecutive (as they are here).
@@ -342,15 +343,14 @@ class Scan(HardwareModule):
         wr_ptr = int(values[1])
         cnt = int(values[2])
         active = bool(status & 0x1)
-        overflow = bool((status >> 1) & 0x1) # hardware overflow flag not currently working/updated correctly in FPGA
-        return active, overflow, wr_ptr, cnt
+        return active, wr_ptr, cnt
     
 
     def stream_read(self, max_samples=None, enable_timing=False, check_overflow_every=1):
         """Read available demodulated samples from the ring buffer.
 
         Args:
-            max_samples (int|None): Optional limit on number of <samples to read.
+            max_samples (int|None): Optional limit on number of samples to read.
             enable_timing (bool): If True, log detailed timing information.
             check_overflow_every (int): Check for overflow every N calls (default 1 = every call).
         Returns:
@@ -371,19 +371,20 @@ class Scan(HardwareModule):
 
         if enable_timing:
             _t0 = time.time()
-        active, overflow, wrp, total_written = self.stream_status()
+        _, wrp, total_written = self.stream_status()
         if enable_timing:
             _timings['stream_status'] = time.time() - _t0
-            
+
         # Software overflow detection: if writer advanced by >= depth since last read
         depth = 2**MAX_STEPS_BITS
         if check_overflow:
             delta = (int(total_written) - int(getattr(self, '_stream_total_read', 0))) & 0xFFFFFFFF
-            if delta >= depth or overflow:
-                logger.warning("FPGA streaming overflow flagged. Consider reading faster. Resetting stream.")
+            if delta >= depth:
+                logger.warning("Overflow detected. FPGA writer has advanced by >= %d samples. "
+                              "Consider reading faster. Resetting stream.", depth)
                 # Clear overflow via reset pulse and restart from current write pointer
                 self._stream_ctrl_write(enable=True, reset=True)
-                _, _, wrp2, total2 = self.stream_status()
+                _, wrp2, total2 = self.stream_status()
                 self._stream_rd_ptr = int(wrp2)
                 self._stream_total_read = int(total2)
                 return np.array([], dtype=np.int32)
