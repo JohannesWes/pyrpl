@@ -82,7 +82,9 @@ void error(const char *msg);
 //#define MAP_SIZE 4096UL
 //#define MAP_SIZE 65536UL
 #define MAP_SIZE 131072UL
-//allowed address space: 0x40000000 to 0x40800000 has size 0x800000 = 128*65536 = 8388608
+//allowed address space: 0x40000000 to 0x41000000 has size 0x1000000 = 16MB
+//  - Supports 16 modules at 1MB spacing (0x100000)
+//  - Module N base address: 0x40000000 + N*0x100000 (N=0 to 15)
 //#define MAP_SIZE 8388608UL
 #define MAP_MASK (MAP_SIZE - 1)
 #define MAX_LENGTH 65535
