@@ -82,6 +82,9 @@ module red_pitaya_dsp #(
 
    // output IQ signals and phases for using them in other modules
    output signed [LUTBITS-1:0] iq0_sin_o,
+   output signed [LUTBITS-1:0] iq0_cos_o,
+   output signed [LUTBITS-1:0] iq0_sin_shifted_o,
+   output signed [LUTBITS-1:0] iq0_cos_shifted_o,
    output signed [LUTBITS-1:0] iq1_sin_o,
    output signed [LUTBITS-1:0] iq2_sin_o,
 
@@ -405,11 +408,14 @@ assign trig_o = trig_signal;
 // additional IQ wires
 wire [PHASEBITS-1:0] iq_phase [7:0];
 wire signed [LUTBITS-1:0]   iq_sin [7:0];
+wire signed [LUTBITS-1:0]   iq_cos [7:0];
+wire signed [LUTBITS-1:0]   iq_sin_shifted [7:0];
+wire signed [LUTBITS-1:0]   iq_cos_shifted [7:0];
 wire signed [24-1:0] inphase_iq_demod;
 
 //IQ modules
 generate for (j = 5; j < 6; j = j+1) begin
-   red_pitaya_iq_block 
+   red_pitaya_iq_block
      iq
      (
        // data
@@ -420,7 +426,10 @@ generate for (j = 5; j < 6; j = j+1) begin
        .dat_o        (  output_direct[j] ),  // output data
        .signal_o     (  output_signal[j] ),  // output signal
        .iq_phase_o   (  iq_phase[j]      ),  // new phase output,
-       .sin_out      (  iq_sin[j]    ),  // output sine signals
+       .sin_out      (  iq_sin[j]        ),  // output sine signals
+       .cos_out      (  iq_cos[j]        ),  // output cosine signals
+       .sin_shifted_out ( iq_sin_shifted[j] ), // output shifted sine signals
+       .cos_shifted_out ( iq_cos_shifted[j] ), // output shifted cosine signals
        .inphase_iq_demod(inphase_iq_demod),
 
        // not using 2nd quadrature for most iq's: multipliers will be
@@ -498,6 +507,9 @@ assign iq1_phase_o = iq_phase[6];
 assign iq2_phase_o = iq_phase[7];
 
 assign iq0_sin_o = iq_sin[5];
+assign iq0_cos_o = iq_cos[5];
+assign iq0_sin_shifted_o = iq_sin_shifted[5];
+assign iq0_cos_shifted_o = iq_cos_shifted[5];
 assign iq1_sin_o = iq_sin[6];
 assign iq2_sin_o = iq_sin[7];
 

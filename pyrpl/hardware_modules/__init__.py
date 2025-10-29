@@ -35,3 +35,5 @@ from .iq import Iq
 from .iir import IIR
 from .ams import AMS
 from .trig import Trig
+from .lock_in import LockIn
+#from .example_module import ExampleModule

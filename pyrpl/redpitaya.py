@@ -64,7 +64,7 @@ defaultparameters = dict(
 
 
 class RedPitaya(object):
-    cls_modules = [rp.HK, rp.AMS, rp.Scope, rp.Scan, rp.Sampler, rp.Asg0, rp.Asg1, rp.Fgen3] + \
+    cls_modules = [rp.HK, rp.AMS, rp.Scope, rp.Scan, rp.Sampler, rp.Asg0, rp.Asg1, rp.Fgen3, rp.LockIn] + \
                   [rp.Pwm] * 2 + [rp.Iq] * 3  + [rp.Trig] + [rp.IIR] #+ [rp.Pid] * 3
 
     def __init__(self, config=None,  # configfile is needed to store parameters. None simulates one

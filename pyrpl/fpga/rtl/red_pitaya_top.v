@@ -259,9 +259,10 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 // assign sys_err  [5       ] =  1'b0;
 // assign sys_ack  [5       ] =  1'b1;
 
-assign sys_rdata[7*32+:32] = 32'h0; 
-assign sys_err  [7       ] =  1'b0;
-assign sys_ack  [7       ] =  1'b1;
+// Region 7 is now used by lock_in module
+// assign sys_rdata[7*32+:32] = 32'h0;
+// assign sys_err  [7       ] =  1'b0;
+// assign sys_ack  [7       ] =  1'b1;
 
 // Modules 8-15: Available for future expansion
 assign sys_rdata[ 8*32+:32] = 32'h0;
@@ -526,6 +527,9 @@ wire [PHASEBITS-1:0] iq1_phase;
 wire [PHASEBITS-1:0] iq2_phase;
 
 wire signed [LUTBITS-1:0] iq0_sin;
+wire signed [LUTBITS-1:0] iq0_cos;
+wire signed [LUTBITS-1:0] iq0_sin_shifted;
+wire signed [LUTBITS-1:0] iq0_cos_shifted;
 wire signed [LUTBITS-1:0] iq1_sin;
 wire signed [LUTBITS-1:0] iq2_sin;
 
@@ -594,6 +598,9 @@ red_pitaya_dsp i_dsp (
   .iq2_phase_o     (  iq2_phase                  ),
 
   .iq0_sin_o       (  iq0_sin                    ),
+  .iq0_cos_o       (  iq0_cos                    ),
+  .iq0_sin_shifted_o ( iq0_sin_shifted           ),
+  .iq0_cos_shifted_o ( iq0_cos_shifted           ),
   .iq1_sin_o       (  iq1_sin                    ),
   .iq2_sin_o       (  iq2_sin                    ),
 
@@ -688,8 +695,11 @@ endgenerate
 //---------------------------------------------------------------------------------
 //  Scan Module
 
-wire signed [31:0] demod_filtered_data;
-wire               demod_filtered_tvalid;        
+// Dual-channel lock-in outputs
+wire signed [31:0] demod_filtered_data1;
+wire               demod_filtered_tvalid1;
+wire signed [31:0] demod_filtered_data2;
+wire               demod_filtered_tvalid2;        
 
 scan #(
     .MAX_STEPS_BITS (12),
@@ -703,8 +713,8 @@ scan #(
     // Data Inputs - now supporting both ADC and IQ1
     .adc_input_i   (adc_a),
     .iq_input_i    (inphase_iq_demod),
-    .demod_input_i (demod_filtered_data),
-    .demod_input_valid_i (demod_filtered_tvalid),
+    .demod_input_i (demod_filtered_data1),        // Using lock-in channel 1
+    .demod_input_valid_i (demod_filtered_tvalid1),
 
     // Trigger Output
     .trigger_o     (scan_trigger_o),
@@ -759,14 +769,32 @@ assign dsp_asg2_input = fgen3_output_to_dsp_enable ? fgen3_dac_b : asg_b_output;
 lock_in #(
     .PHASEBITS    (PHASEBITS),
     .LUTBITS      (LUTBITS)
-) i_new (
+) i_lock_in (
     .clk_i        (adc_clk),
     .rstn_i       (adc_rstn),
     .adc_input_i  (adc_a), // ADC input signal
-    .ref_signal_i (iq0_sin), // Reference signal from IQ0
 
-    .filtered_output_o (demod_filtered_data),
-    .filtered_output_valid_o (demod_filtered_tvalid)
+    // Reference signals from IQ0 module
+    .ref_signal_sin_i         (iq0_sin),
+    .ref_signal_cos_i         (iq0_cos),
+    .ref_signal_sin_shifted_i (iq0_sin_shifted),
+    .ref_signal_cos_shifted_i (iq0_cos_shifted),
+
+    // Dual-channel outputs
+    .filtered_output1_o       (demod_filtered_data1),
+    .filtered_output1_valid_o (demod_filtered_tvalid1),
+    .filtered_output2_o       (demod_filtered_data2),
+    .filtered_output2_valid_o (demod_filtered_tvalid2),
+
+    // System bus interface
+    .sys_addr        (  sys_addr                   ),  // address
+    .sys_wdata       (  sys_wdata                  ),  // write data
+    .sys_sel         (  sys_sel                    ),  // write byte select
+    .sys_wen         (  sys_wen[7]                 ),  // write enable
+    .sys_ren         (  sys_ren[7]                 ),  // read enable
+    .sys_rdata       (  sys_rdata[ 7*32+31: 7*32]  ),  // read data
+    .sys_err         (  sys_err[7]                 ),  // error indicator
+    .sys_ack         (  sys_ack[7]                 )   // acknowledge signal
 );
 
 

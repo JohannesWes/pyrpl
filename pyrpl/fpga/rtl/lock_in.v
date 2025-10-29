@@ -7,77 +7,199 @@ module lock_in #(
     input wire                          rstn_i,
 
     input wire signed [DATA_WIDTH-1:0]  adc_input_i,
-    input wire signed [LUTBITS-1:0]     ref_signal_i,
+    input wire signed [LUTBITS-1:0]     ref_signal_sin_i,
+    input wire signed [LUTBITS-1:0]     ref_signal_cos_i,
+    input wire signed [LUTBITS-1:0]     ref_signal_sin_shifted_i,
+    input wire signed [LUTBITS-1:0]     ref_signal_cos_shifted_i,
 
-    output reg signed [32-1:0]          filtered_output_o,
-    output reg                          filtered_output_valid_o
+    output reg signed [32-1:0]          filtered_output1_o,
+    output reg                          filtered_output1_valid_o,
+    output reg signed [32-1:0]          filtered_output2_o,
+    output reg                          filtered_output2_valid_o,
 
-    // Currently no system-bus interface implemented, as everything is hardcoded
+    // System bus interface
+    input      [32-1:0]                 sys_addr,
+    input      [32-1:0]                 sys_wdata,
+    input      [ 4-1:0]                 sys_sel,
+    input                               sys_wen,
+    input                               sys_ren,
+    output reg [32-1:0]                 sys_rdata,
+    output reg                          sys_err,
+    output reg                          sys_ack
 );
 
 localparam EXTEND_BITS_TO_32 = 32 - (DATA_WIDTH + LUTBITS);
 
-// register the ADC input and reference signal
-reg signed [DATA_WIDTH-1:0] adc_input_reg;
-reg signed [LUTBITS -1:0] ref_signal_reg;
+// Control registers for system bus interface
+reg [1:0]  ref_select1;        // Channel 1: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
+reg [1:0]  ref_select2;        // Channel 2: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
+
+// Multiplexers for reference signal selection
+wire signed [LUTBITS-1:0] ref_signal_selected1;
+wire signed [LUTBITS-1:0] ref_signal_selected2;
+
+assign ref_signal_selected1 = (ref_select1 == 2'd0) ? ref_signal_sin_i :
+                              (ref_select1 == 2'd1) ? ref_signal_cos_i :
+                              (ref_select1 == 2'd2) ? ref_signal_sin_shifted_i :
+                                                       ref_signal_cos_shifted_i;
+
+assign ref_signal_selected2 = (ref_select2 == 2'd0) ? ref_signal_sin_i :
+                              (ref_select2 == 2'd1) ? ref_signal_cos_i :
+                              (ref_select2 == 2'd2) ? ref_signal_sin_shifted_i :
+                                                       ref_signal_cos_shifted_i;
+
+// register the ADC input and reference signals
+reg signed [DATA_WIDTH-1:0] adc_input_reg1;
+reg signed [DATA_WIDTH-1:0] adc_input_reg2;
+reg signed [LUTBITS -1:0] ref_signal_reg1;
+reg signed [LUTBITS -1:0] ref_signal_reg2;
 
 always @(posedge clk_i) begin
     if (!rstn_i) begin
-        adc_input_reg  <= {DATA_WIDTH{1'b0}};
-        ref_signal_reg <= {LUTBITS{1'b0}};
+        adc_input_reg1  <= {DATA_WIDTH{1'b0}};
+        ref_signal_reg1 <= {LUTBITS{1'b0}};
+        adc_input_reg2  <= {DATA_WIDTH{1'b0}};
+        ref_signal_reg2 <= {LUTBITS{1'b0}};
     end else begin
-        adc_input_reg  <= adc_input_i;
-        ref_signal_reg <= ref_signal_i;
+        adc_input_reg1  <= adc_input_i;
+        adc_input_reg2  <= adc_input_i;
+        ref_signal_reg1 <= ref_signal_selected1;
+        ref_signal_reg2 <= ref_signal_selected2;
     end
 end
 
 // multiply the ADC input with the reference signal
-reg signed [DATA_WIDTH+LUTBITS-1:0] product_adc_ref;
+reg signed [DATA_WIDTH+LUTBITS-1:0] product_adc_ref1;
+reg signed [DATA_WIDTH+LUTBITS-1:0] product_adc_ref2;
 
 always @(posedge clk_i) begin
     if (!rstn_i) begin
-        product_adc_ref <= {DATA_WIDTH+LUTBITS{1'b0}};
+        product_adc_ref1 <= {DATA_WIDTH+LUTBITS{1'b0}};
+        product_adc_ref2 <= {DATA_WIDTH+LUTBITS{1'b0}};
     end else begin
-        product_adc_ref <= adc_input_reg * ref_signal_reg;
+        product_adc_ref1 <= adc_input_reg1 * ref_signal_reg1;
+        product_adc_ref2 <= adc_input_reg2 * ref_signal_reg2;
     end
 end
 
 // Extend the product to 32 bits for directing it to the CIC decimator
-wire signed [31:0] product_adc_ref_32_bit;
-assign product_adc_ref_32_bit = {{EXTEND_BITS_TO_32{product_adc_ref[DATA_WIDTH+LUTBITS-1]}}, product_adc_ref};
+wire signed [31:0] product_adc_ref_32_bit1;
+wire signed [31:0] product_adc_ref_32_bit2;
+assign product_adc_ref_32_bit1 = {{EXTEND_BITS_TO_32{product_adc_ref1[DATA_WIDTH+LUTBITS-1]}}, product_adc_ref1};
+assign product_adc_ref_32_bit2 = {{EXTEND_BITS_TO_32{product_adc_ref2[DATA_WIDTH+LUTBITS-1]}}, product_adc_ref2};
 
-wire signed [39:0]  decimator_output;
-wire                dec_m_axis_data_tvalid;
+// CIC decimator outputs
+wire signed [39:0]  decimator_output1;
+wire signed [39:0]  decimator_output2;
+wire                dec_m_axis_data_tvalid1;
+wire                dec_m_axis_data_tvalid2;
 
-cic_decimate_by_4096 cic_decimate_instance   (
-  .aclk(clk_i),                                 // input wire aclk
-  .s_axis_data_tdata(product_adc_ref_32_bit),   // input wire [31 : 0] s_axis_data_tdata.
-  .s_axis_data_tvalid(1'b1),                    // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                        // output wire s_axis_data_tready
-  .m_axis_data_tdata(decimator_output),         // output wire [39 : 0] m_axis_data_tdata
-  .m_axis_data_tvalid(dec_m_axis_data_tvalid)   // output wire m_axis_data_tvalid
+// CIC decimator instance - Channel 1
+cic_decimate_by_4096 cic_decimate_instance_ch1 (
+  .aclk(clk_i),                                  // input wire aclk
+  .s_axis_data_tdata(product_adc_ref_32_bit1),   // input wire [31 : 0] s_axis_data_tdata.
+  .s_axis_data_tvalid(1'b1),                     // input wire s_axis_data_tvalid
+  .s_axis_data_tready(),                         // output wire s_axis_data_tready
+  .m_axis_data_tdata(decimator_output1),         // output wire [39 : 0] m_axis_data_tdata
+  .m_axis_data_tvalid(dec_m_axis_data_tvalid1)   // output wire m_axis_data_tvalid
 );
 
-wire signed [31:0]  fir_output;
-wire                fir_m_axis_data_tvalid;
-
-fir_lowpass_500Hz fir_lowpass_inst (
-  .aclk(clk_i),                                 // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                        // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_m_axis_data_tvalid),  // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_output)                // output wire [31 : 0] m_axis_data_tdata
+// CIC decimator instance - Channel 2
+cic_decimate_by_4096 cic_decimate_instance_ch2 (
+  .aclk(clk_i),                                  // input wire aclk
+  .s_axis_data_tdata(product_adc_ref_32_bit2),   // input wire [31 : 0] s_axis_data_tdata.
+  .s_axis_data_tvalid(1'b1),                     // input wire s_axis_data_tvalid
+  .s_axis_data_tready(),                         // output wire s_axis_data_tready
+  .m_axis_data_tdata(decimator_output2),         // output wire [39 : 0] m_axis_data_tdata
+  .m_axis_data_tvalid(dec_m_axis_data_tvalid2)   // output wire m_axis_data_tvalid
 );
+
+// FIR lowpass outputs
+wire signed [31:0]  fir_output1;
+wire signed [31:0]  fir_output2;
+wire                fir_m_axis_data_tvalid1;
+wire                fir_m_axis_data_tvalid2;
+
+// FIR lowpass instance - Channel 1
+fir_lowpass_500Hz fir_lowpass_inst_ch1 (
+  .aclk(clk_i),                                  // input wire aclk
+  .s_axis_data_tvalid(dec_m_axis_data_tvalid1),  // input wire s_axis_data_tvalid
+  .s_axis_data_tready(),                         // output wire s_axis_data_tready
+  .s_axis_data_tdata(decimator_output1),         // input wire [39 : 0] s_axis_data_tdata
+  .m_axis_data_tvalid(fir_m_axis_data_tvalid1),  // output wire m_axis_data_tvalid
+  .m_axis_data_tdata(fir_output1)                // output wire [31 : 0] m_axis_data_tdata
+);
+
+// FIR lowpass instance - Channel 2
+fir_lowpass_500Hz fir_lowpass_inst_ch2 (
+  .aclk(clk_i),                                  // input wire aclk
+  .s_axis_data_tvalid(dec_m_axis_data_tvalid2),  // input wire s_axis_data_tvalid
+  .s_axis_data_tready(),                         // output wire s_axis_data_tready
+  .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
+  .m_axis_data_tvalid(fir_m_axis_data_tvalid2),  // output wire m_axis_data_tvalid
+  .m_axis_data_tdata(fir_output2)                // output wire [31 : 0] m_axis_data_tdata
+);
+
+// Output register assignment - Channel 1
+always @(posedge clk_i) begin
+    if (!rstn_i) begin
+        filtered_output1_o <= 32'b0;
+        filtered_output1_valid_o <= 1'b0;
+    end else begin
+        filtered_output1_o <= fir_output1;
+        filtered_output1_valid_o <= fir_m_axis_data_tvalid1;
+    end
+end
+
+// Output register assignment - Channel 2
+always @(posedge clk_i) begin
+    if (!rstn_i) begin
+        filtered_output2_o <= 32'b0;
+        filtered_output2_valid_o <= 1'b0;
+    end else begin
+        filtered_output2_o <= fir_output2;
+        filtered_output2_valid_o <= fir_m_axis_data_tvalid2;
+    end
+end
+
+// System bus interface - write logic
+// Register map:
+//   0x000: ref_select1 (bits 1:0), ref_select2 (bits 3:2)
+always @(posedge clk_i) begin
+    if (!rstn_i) begin
+        ref_select1 <= 2'd0;  // Default: sin
+        ref_select2 <= 2'd1;  // Default: cos
+    end else begin
+        if (sys_wen) begin
+            if (sys_addr[19:0] == 20'h00000) begin
+                ref_select1 <= sys_wdata[1:0];
+                ref_select2 <= sys_wdata[3:2];
+            end
+        end
+    end
+end
+
+// System bus interface - read logic
+wire sys_en;
+assign sys_en = sys_wen | sys_ren;
 
 always @(posedge clk_i) begin
     if (!rstn_i) begin
-        filtered_output_o <= 32'b0;
-        filtered_output_valid_o <= 1'b0;
+        sys_err <= 1'b0;
+        sys_ack <= 1'b0;
     end else begin
-        filtered_output_o <= fir_output;
-        filtered_output_valid_o <= fir_m_axis_data_tvalid;
+        sys_err <= 1'b0;
+        casez (sys_addr[19:0])
+            20'h00000: begin
+                sys_ack   <= sys_en;
+                sys_rdata <= {28'b0, ref_select2, ref_select1};
+            end
+            default: begin
+                sys_ack   <= sys_en;
+                sys_rdata <= 32'h0;
+            end
+        endcase
     end
 end
-    
+
 endmodule
