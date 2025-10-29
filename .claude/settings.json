@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./pyrpl.egg-info/**)",
+      "Read(./.pytest_cache/**)",
+      "Read(./build/**)",
+      "Read(./dist/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./venv/**)",
+      "Read(./.venv/**)",
+      "Read(./.git/**)",
+      "Read(./aqt_local/**)",
+      "Read(./**/*.pyc)",
+      "Read(./.docker/**)",
+      "Read(./venv310/**)",
+      "Read(./idea/**)"
+    ]
+  }
+}
