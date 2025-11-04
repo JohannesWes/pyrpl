@@ -96,6 +96,7 @@ read_verilog                      $path_rtl/red_pitaya_quarter_wave_lut.v
 read_verilog                      $path_rtl/red_pitaya_3fgen.v
 read_verilog                      $path_rtl/scan_new.v
 read_verilog                      $path_rtl/lock_in.v
+read_verilog                      $path_rtl/odmr_freq_lock_1f.v
 
 #constraints
 read_xdc                          $path_sdc/red_pitaya.xdc

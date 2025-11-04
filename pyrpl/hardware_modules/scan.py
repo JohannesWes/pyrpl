@@ -54,22 +54,27 @@ and high-throughput data collection.
 
 **Typical Streaming Workflow:**
 ```python
-# 1. Start streaming
-scan.stream_start()
-
-# 2. Continuously read data
+# 1. Stream demodulated error (loop open)
+scan.stream_start(input_source='demod')
 for batch in scan.stream_iter(poll_interval=0.01, batch=256):
-    process_data(batch)  # batch is np.ndarray of int32 samples
+    process_demod_data(batch)  # batch is np.ndarray of int32 samples
+scan.stream_stop()
+
+# 2. Stream FTW correction (loop closed, tracking resonance)
+odmr.enable = True  # Enable ODMR frequency lock
+scan.stream_start(input_source='ftw_corr')
+for batch in scan.stream_iter(poll_interval=0.01, batch=256):
+    freq_drift_hz = scan.ftw_to_hz(batch)  # Convert FTW to Hz
+    monitor_frequency_drift(freq_drift_hz)
+scan.stream_stop()
 
 # 3. Or manual reads
 while acquiring:
-    data = scan.stream_read(max_samples=512)
-    if data.size > 0:
-        process_data(data)
+    ftw_data = scan.stream_read(max_samples=512)
+    if ftw_data.size > 0:
+        freq_hz = scan.ftw_to_hz(ftw_data)
+        process_data(freq_hz)
     time.sleep(0.005)
-
-# 4. Stop streaming
-scan.stream_stop()
 ```
 
 **Stream API Methods:**
@@ -129,6 +134,8 @@ ACCUM_WIDTH = 64
 BUS_DATA_WIDTH = 32
 FPGA_CLK_PERIOD_S = 8e-9  # 1/125MHz
 DEMOD_DECIMATION = 4096  # Decimation factor for demodulated data
+FPGA_CLK_HZ = 125e6  # FPGA clock frequency
+FTW_PER_HZ = (2**32) / FPGA_CLK_HZ  # FTW units per Hz ≈ 34.359738
 
 # Address Map (relative to module base)
 ADDR_CONTROL = 0x00
@@ -262,14 +269,15 @@ class Scan(HardwareModule):
                                         doc="Selects trigger output pin (0-7). "
                                             "WARNING: Currently hardwired to DOUT7 (exp_p_io[7]) in FPGA!")
 
-    # Input Selection - now with 3 options
-    _input_options = {"adc": 0, "iq0": 1, "demod": 2}
+    # Input Selection - now with 4 options
+    _input_options = {"adc": 0, "iq0": 1, "demod": 2, "ftw_corr": 3}
     input_select = SelectRegister(ADDR_INPUT_SELECT, options=_input_options,
                                   default="adc",
                                   doc="Selects the input signal source: "
-                                      "'adc' for 14-bit ADC input at 125 MHz, "
-                                      "'iq0' for 24-bit IQ demodulator output at 125 MHz, "
-                                      "'demod' for 32-bit lock-in demodulated output (valid every 4096 cycles).")
+                                      "'adc' for 14-bit ADC input at 125 MHz (scan only), "
+                                      "'iq0' for 24-bit IQ demodulator output at 125 MHz (scan only), "
+                                      "'demod' for 32-bit lock-in demodulated output (valid every 4096 cycles), "
+                                      "'ftw_corr' for 32-bit FTW correction from ODMR tracker (stream only).")
 
     # ---------------- Streaming (32-bit @ ~31 kHz) ----------------
     def _stream_ctrl_write(self, enable=None, reset=False):
@@ -305,15 +313,21 @@ class Scan(HardwareModule):
 
 
     def stream_start(self, input_source="demod"):
-        """Enable continuous streaming of demodulated samples into the BRAM ring buffer.
+        """Enable continuous streaming of demodulated samples or FTW correction into the BRAM ring buffer.
+
+        Args:
+            input_source (str): Input to stream - 'demod' for lock-in error signal or
+                               'ftw_corr' for ODMR frequency correction. Default: 'demod'
 
         Notes:
             - Uses the data3 BRAM region (32-bit words) as a circular buffer.
             - Blocks scanning functionality while active (shared memory).
+            - For tracking resonance drift, use 'ftw_corr' when ODMR lock is enabled.
         """
-        if input_source != "demod":
-            logger.warning("Streaming currently only supported for 'demod'. Forcing input_select to 'demod'.")
-        self.input_select = 'demod'
+        if input_source not in ["demod", "ftw_corr"]:
+            logger.warning("Streaming only supported for 'demod' and 'ftw_corr'. Forcing input_select to 'demod'.")
+            input_source = "demod"
+        self.input_select = input_source
         # Reset FPGA streaming engine and enable
         self._stream_ctrl_write(enable=True, reset=True)
         # Initialize software reader state aligned to current writer
@@ -457,6 +471,28 @@ class Scan(HardwareModule):
                 yield arr
             else:
                 time.sleep(poll_interval)
+
+    def ftw_to_hz(self, ftw_values):
+        """Convert raw FTW (Frequency Tuning Word) values to Hz.
+
+        Args:
+            ftw_values: Scalar, list, or np.ndarray of signed 32-bit FTW values
+
+        Returns:
+            Frequency values in Hz (same shape as input)
+
+        Notes:
+            - FTW correction represents frequency offset applied by ODMR tracker
+            - Conversion: freq_hz = ftw_value / FTW_PER_HZ
+            - FTW_PER_HZ = 2^32 / 125 MHz ≈ 34.359738 FTW/Hz
+            - Typical range: ±1 MHz correction ≈ ±34,359,738 FTW units
+
+        Example:
+            >>> ftw_data = scan.stream_read()
+            >>> freq_drift_hz = scan.ftw_to_hz(ftw_data)
+            >>> print(f"Resonance drift: {freq_drift_hz.mean():.1f} Hz")
+        """
+        return np.asarray(ftw_values, dtype=np.float64) / FTW_PER_HZ
 
 
     # --- Control Methods ---

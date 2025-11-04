@@ -68,11 +68,12 @@
  * INPUT MODES (Both Scan and Stream)
  * ============================================================================
  * Selected via ADDR_INPUT_SELECT (0x1C):
- * - 0 (ADC):   14-bit ADC input at 125 MHz (scan only)
- * - 1 (IQ):    24-bit IQ demod output at 125 MHz (scan only)
- * - 2 (DEMOD): 32-bit lock-in output, valid every 4096 cycles (both modes)
+ * - 0 (ADC):      14-bit ADC input at 125 MHz (scan only)
+ * - 1 (IQ):       24-bit IQ demod output at 125 MHz (scan only)
+ * - 2 (DEMOD):    32-bit lock-in output, valid every 4096 cycles (both modes)
+ * - 3 (FTW_CORR): 32-bit FTW correction from ODMR tracker, valid every 4096 cycles (stream only)
  *
- * Note: Stream mode forces input_select = DEMOD (enforced by Python)
+ * Note: Stream mode supports DEMOD and FTW_CORR inputs (enforced by Python)
  *
  * ============================================================================
  * MEMORY MAP (Relative to Module Base Address)
@@ -140,11 +141,13 @@ module scan #(
     input wire                          clk,
     input wire                          rstn,          // Active low reset
 
-    // Data Inputs - three inputs and option for input selection
+    // Data Inputs - four inputs and option for input selection
     input wire signed [DATA_WIDTH_ADC-1:0]  adc_input_i,   // ADC input
     input wire signed [DATA_WIDTH_IQ-1:0]   iq_input_i,    // IQ demodulator input
     input wire signed [DATA_WIDTH_DEMOD-1:0] demod_input_i,     // Demodulated input (32-bit)
     input wire                          demod_input_valid_i,    // Valid signal for demodulated data
+    input wire signed [DATA_WIDTH_DEMOD-1:0] ftw_correction_i,  // FTW correction from ODMR tracker
+    input wire                          ftw_correction_valid_i,  // Valid signal for FTW correction
 
     // Trigger Output
     output wire                         trigger_o,
@@ -183,9 +186,10 @@ localparam ADDR_STREAM_WR_PTR   = 20'h00028; // R: current write pointer (mod BR
 localparam ADDR_STREAM_SAMPLES  = 20'h0002C; // R: total samples written since last reset
 
 // Input selection values
-localparam INPUT_SELECT_ADC   = 2'b00;
-localparam INPUT_SELECT_IQ    = 2'b01;
-localparam INPUT_SELECT_DEMOD = 2'b10;
+localparam INPUT_SELECT_ADC      = 2'b00;
+localparam INPUT_SELECT_IQ       = 2'b01;
+localparam INPUT_SELECT_DEMOD    = 2'b10;
+localparam INPUT_SELECT_FTW_CORR = 2'b11;
 
 // BRAM Address Mapping
 // LSB Bank: Module Base + 0x10000 - 0x1FFFF (Relative Addr: 20'h1????)
@@ -241,15 +245,17 @@ reg [32-1:0]                reg_valid_samples;      // Count of valid samples ac
 reg signed [ACCUM_WIDTH-1:0] selected_input_extended;
 always @(*) begin
     case (reg_input_select)
-        INPUT_SELECT_ADC:   selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_ADC){adc_input_i[DATA_WIDTH_ADC-1]}}, adc_input_i};
-        INPUT_SELECT_IQ:    selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_IQ){iq_input_i[DATA_WIDTH_IQ-1]}}, iq_input_i};
-        INPUT_SELECT_DEMOD: selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_DEMOD){demod_input_i[DATA_WIDTH_DEMOD-1]}}, demod_input_i};
-        default:            selected_input_extended = {ACCUM_WIDTH{1'b0}};
+        INPUT_SELECT_ADC:      selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_ADC){adc_input_i[DATA_WIDTH_ADC-1]}}, adc_input_i};
+        INPUT_SELECT_IQ:       selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_IQ){iq_input_i[DATA_WIDTH_IQ-1]}}, iq_input_i};
+        INPUT_SELECT_DEMOD:    selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_DEMOD){demod_input_i[DATA_WIDTH_DEMOD-1]}}, demod_input_i};
+        INPUT_SELECT_FTW_CORR: selected_input_extended = {{(ACCUM_WIDTH-DATA_WIDTH_DEMOD){ftw_correction_i[DATA_WIDTH_DEMOD-1]}}, ftw_correction_i};
+        default:               selected_input_extended = {ACCUM_WIDTH{1'b0}};
     endcase
 end
 
 // Determine if we should accumulate this cycle
-wire accumulate_enable = (reg_input_select == INPUT_SELECT_DEMOD) ? demod_input_valid_i : 1'b1;
+wire accumulate_enable = (reg_input_select == INPUT_SELECT_DEMOD) ? demod_input_valid_i :
+                         (reg_input_select == INPUT_SELECT_FTW_CORR) ? ftw_correction_valid_i : 1'b1;
 
 // Status Registers/Signals
 reg                         reg_busy_flag;
@@ -566,13 +572,15 @@ always @(posedge clk) begin
             reg_stream_sample_cnt <= 32'b0;
         end else if (reg_stream_enable) begin
             reg_stream_active <= 1'b1;
-            // Only support demodulated input streaming (guard anyway)
-            if (reg_input_select == INPUT_SELECT_DEMOD) begin
-                if (demod_input_valid_i) begin
-                    // Increment pointer and sample counter; actual memory write handled in unified write block
-                    reg_stream_wr_ptr <= reg_stream_wr_ptr + 1'b1;
-                    reg_stream_sample_cnt <= reg_stream_sample_cnt + 1'b1;
-                end
+            // Support demodulated input and FTW correction streaming
+            if (reg_input_select == INPUT_SELECT_DEMOD && demod_input_valid_i) begin
+                // Increment pointer and sample counter; actual memory write handled in unified write block
+                reg_stream_wr_ptr <= reg_stream_wr_ptr + 1'b1;
+                reg_stream_sample_cnt <= reg_stream_sample_cnt + 1'b1;
+            end else if (reg_input_select == INPUT_SELECT_FTW_CORR && ftw_correction_valid_i) begin
+                // Increment pointer and sample counter for FTW correction streaming
+                reg_stream_wr_ptr <= reg_stream_wr_ptr + 1'b1;
+                reg_stream_sample_cnt <= reg_stream_sample_cnt + 1'b1;
             end
         end
     end
@@ -610,8 +618,10 @@ assign bram_wr_data_lsb = accum[BUS_DATA_WIDTH-1:0];
 assign bram_wr_data_msb = accum[ACCUM_WIDTH-1:BUS_DATA_WIDTH];
 assign bram_wr_data_data3 = reg_valid_samples;  // Assign valid sample count
 
-// Streaming write enable (demod stream into data3 BRAM ring buffer)
-wire stream_wr_en = reg_stream_enable && (reg_input_select == INPUT_SELECT_DEMOD) && demod_input_valid_i;
+// Streaming write enable (demod or FTW stream into data3 BRAM ring buffer)
+wire stream_wr_en = reg_stream_enable &&
+                    ((reg_input_select == INPUT_SELECT_DEMOD && demod_input_valid_i) ||
+                     (reg_input_select == INPUT_SELECT_FTW_CORR && ftw_correction_valid_i));
 // Muxed write controls for data3 BRAM (single-port write template)
 reg                       data3_we_mux;
 reg [BRAM_ADDR_BITS-1:0]  data3_waddr_mux;
@@ -630,7 +640,8 @@ always @(*) begin
     end else if (stream_wr_en) begin
         data3_we_mux    = 1'b1;
         data3_waddr_mux = reg_stream_wr_ptr;
-        data3_wdata_mux = demod_input_i[31:0];
+        // Select streaming data source based on input mode
+        data3_wdata_mux = (reg_input_select == INPUT_SELECT_FTW_CORR) ? ftw_correction_i[31:0] : demod_input_i[31:0];
     end
 end
 

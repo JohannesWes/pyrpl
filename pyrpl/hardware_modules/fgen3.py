@@ -13,6 +13,19 @@ Key functionalities:
 - Independent phase and amplitude for each component's contribution to DAC B.
 - Optional frequency modulation (FM) for each component using an external signal.
 - Overall DC offset control for the two DAC outputs.
+
+This module is automatically integrated with the ODMR frequency lock module
+(odmr_freq_lock) to enable real-time resonance tracking in ODMR experiments.
+When the ODMR frequency lock is enabled, it generates a frequency correction
+signal (FTW correction) that is automatically applied to ALL three frequency
+components in this module at the FPGA level. This correction is added to:
+
+    1. Base frequency step for each component (comp_freq_step)
+    2. FM-modulated frequency deltas (when FM is enabled)
+
+For detailed ODMR frequency lock documentation, see:
+    - pyrpl/hardware_modules/odmr_freq_lock.py
+    - docs/developer_guide/odmr_freq_lock_implementation.md
 """
 
 from typing import Optional, Union, List, Tuple

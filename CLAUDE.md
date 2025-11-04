@@ -186,6 +186,41 @@ p.rp.scan.dwell_time = 0.001   # Convert 1ms→125000 cycles, write to 0x4050000
 
 The Scan module recently received significant performance improvements for continuous data streaming.
 
+### ODMR Frequency Lock Integration
+
+A new hardware module for ODMR (Optically-Detected Magnetic Resonance) frequency tracking has been implemented:
+
+**Signal Flow:**
+```
+Lock-in (demod) → odmr_freq_lock (Region 8) → fgen3 (FTW correction) → Scan (streaming)
+```
+
+**Key Components:**
+- **`odmr_freq_lock_1f.v`** (FPGA): Integral-only frequency-locked loop at Region 8 (0x40800000)
+  - Demodulates 1f-I error signal from lock-in at ~30.5 kHz
+  - Computes FTW correction using Q8.24 fixed-point arithmetic
+  - Default bandwidth: 300 Hz (conservative start: 150 Hz)
+  - Saturation limit: ±1 MHz correction range
+
+- **`odmr_freq_lock.py`** (Python): HardwareModule interface
+  - User-friendly properties: `mu_hz_per_lsb`, `max_correction_hz`, `correction_hz`
+  - Status monitoring: `locked`, `saturated`, `error_lsb`
+  - Convenience methods: `set_bandwidth()`, `get_status()`, `clear()`
+
+- **`fgen3` Integration**: FTW correction automatically applied to all 3 frequency components
+  - Transparent to Python frequency attributes
+  - Affects both base frequency and FM modulation
+  - Zero Python overhead (FPGA-level integration)
+
+- **`scan` Streaming**: New `ftw_corr` input mode for monitoring frequency drift
+  - Stream FTW corrections at ~30.5 kHz via `scan.stream_start(input_source='ftw_corr')`
+  - Convert FTW to Hz using `scan.ftw_to_hz()`
+
+**Documentation:**
+- Implementation guide: `docs/developer_guide/odmr_freq_lock_implementation.md`
+- Module docstrings: `odmr_freq_lock.py`, `fgen3.py`
+- FPGA headers: `odmr_freq_lock_1f.v`, `red_pitaya_3fgen.v`
+
 ## Important Patterns
 
 ### Adding New Hardware Module

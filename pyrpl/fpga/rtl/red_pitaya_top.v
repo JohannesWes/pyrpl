@@ -264,10 +264,10 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 // assign sys_err  [7       ] =  1'b0;
 // assign sys_ack  [7       ] =  1'b1;
 
-// Modules 8-15: Available for future expansion
-assign sys_rdata[ 8*32+:32] = 32'h0;
-assign sys_err  [ 8       ] =  1'b0;
-assign sys_ack  [ 8       ] =  1'b1;
+// Region 8 is now used by odmr_freq_lock_3comb module
+// (connections below in module instantiation)
+
+// Modules 9-15: Available for future expansion
 
 assign sys_rdata[ 9*32+:32] = 32'h0;
 assign sys_err  [ 9       ] =  1'b0;
@@ -699,7 +699,11 @@ endgenerate
 wire signed [31:0] demod_filtered_data1;
 wire               demod_filtered_tvalid1;
 wire signed [31:0] demod_filtered_data2;
-wire               demod_filtered_tvalid2;        
+wire               demod_filtered_tvalid2;
+
+// ODMR frequency tracker outputs
+wire signed [31:0] ftw_correction;
+wire               ftw_correction_valid;        
 
 scan #(
     .MAX_STEPS_BITS (12),
@@ -710,11 +714,13 @@ scan #(
     .clk           (adc_clk),
     .rstn          (adc_rstn),
 
-    // Data Inputs - now supporting both ADC and IQ1
+    // Data Inputs - ADC, IQ, demod, and FTW correction
     .adc_input_i   (adc_a),
     .iq_input_i    (inphase_iq_demod),
     .demod_input_i (demod_filtered_data1),        // Using lock-in channel 1
     .demod_input_valid_i (demod_filtered_tvalid1),
+    .ftw_correction_i (ftw_correction),           // From ODMR freq lock
+    .ftw_correction_valid_i (ftw_correction_valid),
 
     // Trigger Output
     .trigger_o     (scan_trigger_o),
@@ -742,7 +748,8 @@ red_pitaya_3fgen #(
     .dac_a_o      (fgen3_dac_a),
     .dac_b_o      (fgen3_dac_b),
     .output_to_dsp_enable_o (fgen3_output_to_dsp_enable),
-    .fm_mod_in    (iq0_sin), // Modulating signal from IQ0
+    .fm_mod_in    (iq0_sin),          // Modulating signal from IQ0
+    .ftw_correction_i (ftw_correction), // Frequency correction from ODMR tracker
 
     .sys_addr     (sys_addr),
     .sys_wdata    (sys_wdata),
@@ -795,6 +802,38 @@ lock_in #(
     .sys_rdata       (  sys_rdata[ 7*32+31: 7*32]  ),  // read data
     .sys_err         (  sys_err[7]                 ),  // error indicator
     .sys_ack         (  sys_ack[7]                 )   // acknowledge signal
+);
+
+
+//---------------------------------------------------------------------------------
+//  ODMR Frequency Tracking — 1f-I FLL (Region 8)
+//  Implements closed-loop frequency tracking for ODMR measurements using
+//  integral control on demodulated 1f-I component
+
+odmr_freq_lock_1f #(
+  .PHASEBITS   (FGEN3_PHASEBITS), // 32-bit phase accumulator
+  .MU_QFRAC    (24)               // Q8.24 gain format
+) i_odmr_freq_lock_1f (
+  .clk_i       (adc_clk),
+  .rstn_i      (adc_rstn),
+
+  // Demodulated error from lock_in channel 1
+  .err_i       (demod_filtered_data1),
+  .err_valid_i (demod_filtered_tvalid1),
+
+  // Output to 3FGEN
+  .ftw_correction_o       (ftw_correction),
+  .ftw_correction_valid_o (ftw_correction_valid),
+
+  // System bus (Region 8)
+  .sys_addr    (sys_addr),
+  .sys_wdata   (sys_wdata),
+  .sys_sel     (sys_sel),
+  .sys_wen     (sys_wen[8]),
+  .sys_ren     (sys_ren[8]),
+  .sys_rdata   (sys_rdata[8*32 +: 32]),
+  .sys_err     (sys_err[8]),
+  .sys_ack     (sys_ack[8])
 );
 
 

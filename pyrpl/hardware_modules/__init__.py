@@ -36,4 +36,5 @@ from .iir import IIR
 from .ams import AMS
 from .trig import Trig
 from .lock_in import LockIn
+from .odmr_freq_lock import OdmrFreqLock
 #from .example_module import ExampleModule

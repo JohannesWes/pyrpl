@@ -5,6 +5,18 @@
  * Generates a sum of three independently controlled sine waves, on two output
  * channels, with possible frequency modulation and phase offsets for all signals.
  * Uses memory-efficient quarter-sine LUTs.
+ *
+ * This module is integrated with the ODMR frequency lock module
+ * to enable automatic resonance tracking in ODMR experiments.
+ *
+ * FTW Correction Signal Path:
+ *   odmr_freq_lock_1f → ftw_correction_i (signed 32-bit) → Phase Accumulators
+ *
+ * The ftw_correction_i input is automatically added to the frequency step
+ * for ALL three components at two points in the signal chain:
+ *
+ *   1. Base frequency: current_step[i] = comp_freq_step[i] + ftw_correction_reg
+ *   2. FM modulation:  current_step[i] += fm_delta_step[i] (if FM enabled)
 */
 
 
@@ -28,6 +40,7 @@ module red_pitaya_3fgen #(
 
     // --- Inputs ---
     input signed [FM_MOD_BITS-1:0]    fm_mod_in,        // Input/Reference signal for Frequency Modulation
+    input signed [PHASEBITS-1:0]      ftw_correction_i,  // Frequency tuning word correction from ODMR tracker (applied to all 3 components)
 
     // --- System Bus Interface ---
     input      [31:0]                 sys_addr,         // Bus address
@@ -76,6 +89,9 @@ module red_pitaya_3fgen #(
     // Internal Signals and Registers
     //--------------------------------------------------------------------------
     reg  [PHASEBITS-1:0] phase_acc [NUM_COMPONENTS-1:0];
+
+    // FTW correction (registered input from ODMR tracker)
+    reg signed [PHASEBITS-1:0] ftw_correction_reg;
 
     // FM Calculation (pipelined)
     reg signed [(MAX_FM_DEV_KHZ_BITS + 16):0] fm_dev_scaled_reg [NUM_COMPONENTS-1:0];
@@ -240,6 +256,17 @@ module red_pitaya_3fgen #(
     end
 
     //--------------------------------------------------------------------------
+    // Register FTW Correction Input
+    //--------------------------------------------------------------------------
+    always @(posedge clk_i) begin
+        if (!rstn_i) begin
+            ftw_correction_reg <= {PHASEBITS{1'b0}};
+        end else begin
+            ftw_correction_reg <= ftw_correction_i;
+        end
+    end
+
+    //--------------------------------------------------------------------------
     // Core Generator Logic
     //--------------------------------------------------------------------------
     genvar i;
@@ -256,8 +283,9 @@ module red_pitaya_3fgen #(
                end
             end
             assign fm_delta_step[i] = $signed(fm_prod_reg[i]) >>> 16;
-            assign current_step[i] = fm_enable[i] ? (comp_freq_step[i] + fm_delta_step[i])
-                                                  : comp_freq_step[i];
+            // Apply both FM modulation and tracking correction
+            assign current_step[i] = fm_enable[i] ? (comp_freq_step[i] + fm_delta_step[i] + ftw_correction_reg)
+                                                  : (comp_freq_step[i] + ftw_correction_reg);
 
             // --- 2. Phase Accumulation ---
             always @(posedge clk_i) begin
@@ -373,34 +401,3 @@ module red_pitaya_3fgen #(
     );
 
 endmodule
-
-// Dummy module for red_pitaya_saturate if not defined elsewhere for compilation
-// You should have the actual red_pitaya_saturate module available.
-/*
-module red_pitaya_saturate #(
-    parameter BITS_IN  = 18,
-    parameter SHIFT    = 0,
-    parameter BITS_OUT = 14
-) (
-    input signed [BITS_IN-1:0] input_i,
-    output signed [BITS_OUT-1:0] output_o,
-    output overflow
-);
-    // Simplified saturation logic for placeholder
-    localparam MAX_OUT = (1 << (BITS_OUT-1)) - 1;
-    localparam MIN_OUT = -(1 << (BITS_OUT-1));
-    reg signed [BITS_IN-1:0] shifted_input; // Not strictly needed if SHIFT is 0 or handled carefully
-
-    // Apply shift (if any)
-    // Note: Verilog >>> performs arithmetic shift on signed, >> performs logical shift
-    // If SHIFT can be negative for left shift, care must be taken.
-    // For SHIFT >= 0:
-    assign shifted_input = (SHIFT >= 0) ? (input_i >>> SHIFT) : (input_i <<< (-SHIFT));
-
-
-    assign output_o = (shifted_input > MAX_OUT) ? MAX_OUT :
-                      (shifted_input < MIN_OUT) ? MIN_OUT :
-                      shifted_input[BITS_OUT-1:0];
-    assign overflow = (shifted_input > MAX_OUT) || (shifted_input < MIN_OUT);
-endmodule
-*/
