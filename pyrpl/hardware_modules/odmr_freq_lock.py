@@ -73,7 +73,7 @@ Control:
 
 Tuning:
     mu_q: Raw gain in Q8.24 format (FTW/LSB)
-    mu_hz_per_lsb: Gain in user-friendly Hz/LSB units
+    mu_hz_per_lsb: Gain in Hz/LSB units
     deadband_lsb: Deadband threshold in error LSB
     max_correction_hz: Maximum frequency correction in Hz
 
@@ -108,6 +108,12 @@ MU_Q_DEFAULT = 0x01EDE8D0 / MU_Q_SCALE  # ≈ 1.929333 FTW/LSB (for 300 Hz BW wi
 FTW_LIM_DEFAULT = 34359738  # ±1 MHz
 LOCK_COUNT_THRESH = 256  # Samples needed to declare lock
 
+# Default proportional gain (for 300 Hz BW with K=1.1, zero at BW/3)
+# K_p = α/K = 3/1.1 ≈ 2.7273 Hz/LSB
+# K_p,FTW = 2.7273 * (2^32 / 125 MHz) ≈ 93.7084 FTW/LSB
+# Q8.24: round(93.7084 * 2^24) = 0x5DB55838
+KP_Q_DEFAULT = 0x5DB55838 / MU_Q_SCALE  # ≈ 93.7084 FTW/LSB
+
 
 class OdmrFreqLock(HardwareModule):
     """
@@ -121,9 +127,10 @@ class OdmrFreqLock(HardwareModule):
 
     _setup_attributes = [
         'enable', 'invert', 'hold', 'deadband_enable',
-        'mu_hz_per_lsb', 'deadband_lsb', 'max_correction_hz'
+        'mu_hz_per_lsb', 'deadband_lsb', 'max_correction_hz',
+        'prop_enable', 'kp_hz_per_lsb'
     ]
-    _gui_attributes = _setup_attributes + ['locked', 'saturated', 'error_lsb', 'correction_hz']
+    _gui_attributes = _setup_attributes + ['locked', 'saturated', 'saturated_i', 'saturated_pi', 'error_lsb', 'correction_hz']
 
     #--------------------------------------------------------------------------
     # CONTROL REGISTER (0x0000)
@@ -148,6 +155,11 @@ class OdmrFreqLock(HardwareModule):
     deadband_enable = BoolRegister(0x0000,
                                   bitmask=0x10,
                                   doc="Enable deadband. Updates skipped when |error| < deadband threshold.")
+
+    prop_enable = BoolRegister(0x0000,
+                              bit=5,  # Bit 5 = 0x20
+                              doc="Enable proportional path (PI control). "
+                                  "When disabled, loop is integral-only for backward compatibility.")
 
     #--------------------------------------------------------------------------
     # GAIN REGISTER (0x0004) - Q8.24 format
@@ -176,6 +188,17 @@ class OdmrFreqLock(HardwareModule):
                          bits=32,
                          doc="Saturation limit for FTW correction (unsigned magnitude). "
                              "Default 34359738 for ±1 MHz.")
+
+    #--------------------------------------------------------------------------
+    # KP_Q REGISTER (0x001C) - Q8.24 format (was RESERVED)
+    #--------------------------------------------------------------------------
+
+    kp_q = FloatRegister(0x001C,
+                        bits=32,
+                        norm=2**24,  # Q8.24 fixed-point format
+                        signed=True,
+                        doc="Proportional gain in Q8.24 fixed-point (FTW/LSB). "
+                            "Default 0x5DB55838 for 300 Hz BW with zero at BW/3.")
 
     #--------------------------------------------------------------------------
     # STATUS REGISTER (0x0010) - Read-only
@@ -266,14 +289,50 @@ class OdmrFreqLock(HardwareModule):
         self.ftw_lim = ftw_limit
 
     @property
+    def kp_hz_per_lsb(self):
+        """
+        Proportional gain in Hz/LSB.
+
+        This is converted to/from the Q8.24 fixed-point kp_q register.
+
+        For PI control with zero placement at BW/α:
+            K_p = α / K
+        where K is the discriminator slope (LSB/Hz) and α ∈ [2, 4].
+
+        Example: For α=3 with K=1.1 LSB/Hz:
+            K_p ≈ 2.7273 Hz/LSB
+        """
+        # kp_q is FloatRegister with norm=2**24, so it returns Q8.24 value as float (in FTW/LSB units)
+        kp_ftw = self.kp_q
+        return kp_ftw / FTW_PER_HZ
+
+    @kp_hz_per_lsb.setter
+    def kp_hz_per_lsb(self, value):
+        """Set proportional gain in Hz/LSB units."""
+        kp_ftw = value * FTW_PER_HZ
+        # Clamp to Q8.24 range [-128, 128)
+        kp_ftw = max(-128.0, min(128.0 - 1.0/MU_Q_SCALE, kp_ftw))
+        self.kp_q = kp_ftw
+
+    @property
     def locked(self):
         """True if error has been below deadband for 256 consecutive samples."""
         return bool(self._status_reg & 0x1)
 
     @property
     def saturated(self):
-        """True if FTW correction hit saturation limit in recent updates."""
+        """True if FTW correction hit saturation limit in recent updates (legacy: any saturation)."""
         return bool(self._status_reg & 0x2)
+
+    @property
+    def saturated_i(self):
+        """True if integrator path hit saturation limit."""
+        return bool(self._status_reg & 0x4)  # bit[2]
+
+    @property
+    def saturated_pi(self):
+        """True if PI sum (integrator + proportional) hit saturation limit."""
+        return bool(self._status_reg & 0x8)  # bit[3]
 
     @property
     def error_lsb(self):
@@ -304,6 +363,11 @@ class OdmrFreqLock(HardwareModule):
             self.mu_q = MU_Q_DEFAULT
         if self.ftw_lim == 0:
             self.ftw_lim = FTW_LIM_DEFAULT
+        if self.kp_q == 0:
+            self.kp_q = KP_Q_DEFAULT
+
+        # Ensure prop_enable defaults to False (integral-only mode)
+        # This maintains backward compatibility with existing experiments
 
     def clear(self):
         """
@@ -335,6 +399,50 @@ class OdmrFreqLock(HardwareModule):
         logger.info(f"ODMR lock bandwidth set to {bandwidth_hz} Hz "
                    f"(μ = {mu:.6f} Hz/LSB, K = {slope_lsb_per_hz} LSB/Hz)")
 
+    def set_bandwidth_pi(self, bandwidth_hz, slope_lsb_per_hz=1.1, zero_ratio=3):
+        """
+        Set PI loop bandwidth by computing both integral and proportional gains.
+
+        This method enables proportional control and computes both gains from
+        control theory, placing the PI zero at bandwidth_hz / zero_ratio.
+
+        Args:
+            bandwidth_hz (float): Desired closed-loop bandwidth in Hz
+            slope_lsb_per_hz (float): Measured demodulation slope (K) in LSB/Hz.
+                                     Default 1.1 from planning document.
+            zero_ratio (float): Ratio of bandwidth to zero frequency (α).
+                               Default 3 places zero at BW/3 for good damping.
+                               Typical range: 2-4.
+
+        Uses PI control formulas:
+            μ = (2π * BW * Ts) / K         [integral step, Hz/LSB]
+            K_p = α / K                     [proportional gain, Hz/LSB]
+
+        where Ts = 32.768 μs (sample period at 30.5 kS/s).
+
+        Example:
+            >>> odm.set_bandwidth_pi(300, slope_lsb_per_hz=1.1, zero_ratio=3)
+            # Sets μ ≈ 0.05615 Hz/LSB, K_p ≈ 2.7273 Hz/LSB, enables PI mode
+        """
+        Ts = 1.0 / 30517.578  # Sample period at decimated rate
+
+        # Integral gain (same as integral-only formula)
+        mu = (2 * np.pi * bandwidth_hz * Ts) / slope_lsb_per_hz
+
+        # Proportional gain (places zero at bandwidth / zero_ratio)
+        kp = zero_ratio / slope_lsb_per_hz
+
+        # Apply gains
+        self.mu_hz_per_lsb = mu
+        self.kp_hz_per_lsb = kp
+
+        # Enable proportional control
+        self.prop_enable = True
+
+        logger.info(f"ODMR PI lock bandwidth set to {bandwidth_hz} Hz "
+                   f"(μ = {mu:.6f} Hz/LSB, K_p = {kp:.6f} Hz/LSB, "
+                   f"K = {slope_lsb_per_hz} LSB/Hz, zero at {bandwidth_hz/zero_ratio:.1f} Hz)")
+
     def get_status(self):
         """
         Get comprehensive status dictionary.
@@ -352,15 +460,20 @@ class OdmrFreqLock(HardwareModule):
         return {
             'enabled': self.enable,
             'locked': self.locked,
-            'saturated': self.saturated,
+            'saturated': self.saturated,           # Legacy: any saturation
+            'saturated_i': self.saturated_i,       # Integrator only
+            'saturated_pi': self.saturated_pi,     # PI sum
             'inverted': self.invert,
             'held': self.hold,
             'deadband_enabled': self.deadband_enable,
+            'prop_enabled': self.prop_enable,
             'error_lsb': self.error_lsb,
             'correction_hz': self.correction_hz,
             'correction_ftw': self.correction_ftw,
             'mu_hz_per_lsb': self.mu_hz_per_lsb,
             'mu_q': self.mu_q,
+            'kp_hz_per_lsb': self.kp_hz_per_lsb,
+            'kp_q': self.kp_q,
             'deadband_lsb': self.deadband_lsb,
             'max_correction_hz': self.max_correction_hz,
         }

@@ -80,7 +80,7 @@ localparam ADDR_FTW_LIM   = 20'h0000C;  // FTW saturation limit
 localparam ADDR_STATUS    = 20'h00010;  // Status flags
 localparam ADDR_ERR_LATCH = 20'h00014;  // Latched error
 localparam ADDR_FTW_CORR  = 20'h00018;  // Current FTW correction
-localparam ADDR_RESERVED  = 20'h0001C;  // Reserved
+localparam ADDR_KP_Q      = 20'h0001C;  // Proportional gain (Q8.24)
 
 //-----------------------------------------------------------------------------
 // DEFAULT VALUES (Pre-computed from planning doc)
@@ -96,6 +96,12 @@ localparam [31:0] MU_Q_DEFAULT = 32'h01EDE8D0;
 //   1 MHz → round(1e6 * 34.359738) = 34359738
 localparam [31:0] FTW_LIM_DEFAULT = 32'd34359738;
 
+// Default proportional gain for 300 Hz BW with K=1.1 LSB/Hz, zero at BW/3:
+//   K_p = α/K = 3/1.1 ≈ 2.7273 Hz/LSB
+//   K_p,FTW = 2.7273 * (2^32 / 125 MHz) ≈ 93.7084 FTW/LSB
+//   Q8.24: round(93.7084 * 2^24) = 0x5DB55838
+localparam [31:0] KP_Q_DEFAULT = 32'h5DB55838;
+
 // Lock detector: consecutive samples below threshold
 localparam integer LOCK_COUNT_THRESH = 256;  // ~8.4 ms at 30.5 kS/s
 
@@ -107,18 +113,22 @@ reg        ctrl_invert;       // Invert error sign
 reg        ctrl_hold;         // Freeze integrator
 reg        ctrl_deadband_en;  // Enable deadband check
 reg        ctrl_clr;          // Clear integrator (self-clearing)
+reg        ctrl_prop_enable;  // Enable proportional path (PI mode)
 
 reg signed [31:0] reg_mu_q;      // Integral gain (Q8.24)
 reg        [31:0] reg_deadband;  // Deadband threshold (unsigned)
 reg        [31:0] reg_ftw_lim;   // Saturation limit (unsigned)
+reg signed [31:0] reg_kp_q;      // Proportional gain (Q8.24)
 
 //-----------------------------------------------------------------------------
 // STATE REGISTERS
 //-----------------------------------------------------------------------------
-reg signed [PHASEBITS-1:0] ftw_corr;      // Integrator accumulator
-reg signed [31:0]          err_latch;     // Last error processed
-reg                        flag_saturated; // Saturation indicator
-reg        [15:0]          lock_counter;   // Lock detector counter
+reg signed [PHASEBITS-1:0] ftw_corr;       // Integrator accumulator
+reg signed [31:0]          err_latch;      // Last error processed
+reg                        flag_saturated;  // Saturation indicator (any saturation, legacy)
+reg                        flag_i_saturated;   // Integrator-only saturation
+reg                        flag_pi_saturated;  // PI sum saturation
+reg        [15:0]          lock_counter;    // Lock detector counter
 
 //-----------------------------------------------------------------------------
 // SYSTEM BUS INTERFACE
@@ -137,10 +147,12 @@ always @(posedge clk_i) begin
     ctrl_hold        <= 1'b0;
     ctrl_deadband_en <= 1'b0;
     ctrl_clr         <= 1'b0;
+    ctrl_prop_enable <= 1'b0;  // PI mode disabled by default (integral-only)
 
     reg_mu_q      <= MU_Q_DEFAULT;
     reg_deadband  <= 32'd100;  // Default: lock when |error| < 100 LSB
     reg_ftw_lim   <= FTW_LIM_DEFAULT;
+    reg_kp_q      <= KP_Q_DEFAULT;
 
   end else begin
     // Default ack behavior
@@ -159,11 +171,13 @@ always @(posedge clk_i) begin
           ctrl_hold        <= sys_wdata[2];
           ctrl_clr         <= sys_wdata[3];  // Self-clearing
           ctrl_deadband_en <= sys_wdata[4];
+          ctrl_prop_enable <= sys_wdata[5];
         end
 
         ADDR_MU_Q:     reg_mu_q     <= sys_wdata;
         ADDR_DEADBAND: reg_deadband <= sys_wdata;
         ADDR_FTW_LIM:  reg_ftw_lim  <= sys_wdata;
+        ADDR_KP_Q:     reg_kp_q     <= sys_wdata;
 
         default: sys_err <= 1'b1;
       endcase
@@ -173,7 +187,8 @@ always @(posedge clk_i) begin
     if (sys_ren) begin
       case (sys_addr_local)
         ADDR_CTRL: begin
-          sys_rdata <= {27'h0,
+          sys_rdata <= {26'h0,
+                        ctrl_prop_enable,
                         ctrl_deadband_en,
                         ctrl_clr,         // Will read as 0 (self-clearing)
                         ctrl_hold,
@@ -184,10 +199,13 @@ always @(posedge clk_i) begin
         ADDR_MU_Q:      sys_rdata <= reg_mu_q;
         ADDR_DEADBAND:  sys_rdata <= reg_deadband;
         ADDR_FTW_LIM:   sys_rdata <= reg_ftw_lim;
+        ADDR_KP_Q:      sys_rdata <= reg_kp_q;
 
         ADDR_STATUS: begin
-          sys_rdata <= {30'h0,
-                        flag_saturated,               // Bit 1
+          sys_rdata <= {28'h0,
+                        flag_pi_saturated,            // Bit 3: PI sum saturated
+                        flag_i_saturated,             // Bit 2: Integrator saturated
+                        flag_saturated,               // Bit 1: Any saturation (legacy)
                         (lock_counter == LOCK_COUNT_THRESH)}; // Bit 0: locked
         end
 
@@ -236,6 +254,31 @@ wire signed [PHASEBITS-1:0] ftw_corr_saturated = sat_pos ? ftw_lim_signed :
                                                   sat_neg ? -ftw_lim_signed :
                                                   sum_extended[PHASEBITS-1:0];
 
+//-----------------------------------------------------------------------------
+// PROPORTIONAL PATH (PI CONTROL EXTENSION)
+//-----------------------------------------------------------------------------
+
+// Proportional multiply: delta_p_ftw = -KP_Q * e (same Q8.24 mechanics as integral)
+wire signed [63:0] product_p = -($signed(reg_kp_q) * $signed(err_conditioned));
+wire signed [63:0] product_p_rounded = product_p + (64'sd1 << (MU_QFRAC - 1));
+wire signed [PHASEBITS-1:0] delta_p_ftw = product_p_rounded[MU_QFRAC +: PHASEBITS];
+
+// Gate P term: zero when deadband active OR prop_enable=0
+wire signed [PHASEBITS-1:0] p_term = (ctrl_prop_enable && !deadband_skip)
+                                     ? delta_p_ftw
+                                     : {PHASEBITS{1'b0}};
+
+// PI sum with saturation
+wire signed [PHASEBITS:0] ftw_pi_sum = $signed(ftw_corr_saturated) + $signed(p_term);
+wire sat_pi_pos = (ftw_pi_sum > ftw_lim_signed);
+wire sat_pi_neg = (ftw_pi_sum < -ftw_lim_signed);
+wire pi_saturated = sat_pi_pos | sat_pi_neg;
+
+wire signed [PHASEBITS-1:0] ftw_pi_final =
+    sat_pi_pos ? ftw_lim_signed :
+    sat_pi_neg ? -ftw_lim_signed :
+    ftw_pi_sum[PHASEBITS-1:0];
+
 // Lock detector: count consecutive samples below deadband
 wire in_lock_range = (err_abs < reg_deadband);
 
@@ -247,6 +290,8 @@ always @(posedge clk_i) begin
     ftw_corr                <= {PHASEBITS{1'b0}};
     err_latch               <= 32'h0;
     flag_saturated          <= 1'b0;
+    flag_i_saturated        <= 1'b0;
+    flag_pi_saturated       <= 1'b0;
     lock_counter            <= 16'h0;
     ftw_correction_o        <= {PHASEBITS{1'b0}};
     ftw_correction_valid_o  <= 1'b0;
@@ -255,9 +300,11 @@ always @(posedge clk_i) begin
 
     // Clear command overrides everything
     if (ctrl_clr) begin
-      ftw_corr       <= {PHASEBITS{1'b0}};
-      lock_counter   <= 16'h0;
-      flag_saturated <= 1'b0;
+      ftw_corr           <= {PHASEBITS{1'b0}};
+      lock_counter       <= 16'h0;
+      flag_saturated     <= 1'b0;
+      flag_i_saturated   <= 1'b0;
+      flag_pi_saturated  <= 1'b0;
     end
 
     // Update on valid strobe when enabled and not held
@@ -266,14 +313,25 @@ always @(posedge clk_i) begin
       if (ctrl_enable && !ctrl_hold) begin
 
         if (!deadband_skip) begin
-          // Update integrator
-          ftw_corr       <= ftw_corr_saturated;
-          flag_saturated <= saturated;
+          // Anti-windup: Only update integrator if PI sum doesn't saturate
+          if (!pi_saturated) begin
+            ftw_corr         <= ftw_corr_saturated;
+            flag_i_saturated <= saturated;
+          end else begin
+            // PI sum saturated: hold integrator (anti-windup)
+            ftw_corr         <= ftw_corr;
+            flag_i_saturated <= saturated;  // Still track I-only saturation
+          end
+          flag_pi_saturated <= pi_saturated;
 
         end else begin
-          // Deadband active: hold integrator, but update status
-          flag_saturated <= 1'b0;
+          // Deadband active: hold integrator, clear saturation flags
+          flag_i_saturated  <= 1'b0;
+          flag_pi_saturated <= 1'b0;
         end
+
+        // Update combined saturation flag (any saturation, for legacy compatibility)
+        flag_saturated <= saturated | pi_saturated;
 
         // Always latch current error when valid (regardless of deadband)
         // This allows monitoring the error signal even when deadband is active
@@ -289,16 +347,22 @@ always @(posedge clk_i) begin
 
       end else if (!ctrl_enable) begin
         // When disabled, reset to zero
-        ftw_corr       <= {PHASEBITS{1'b0}};
-        lock_counter   <= 16'h0;
-        flag_saturated <= 1'b0;
+        ftw_corr           <= {PHASEBITS{1'b0}};
+        lock_counter       <= 16'h0;
+        flag_saturated     <= 1'b0;
+        flag_i_saturated   <= 1'b0;
+        flag_pi_saturated  <= 1'b0;
       end
 
-      // Update output with NEW correction value when updating, current value when held
+      // Output: Use PI sum when prop enabled AND updating, else integrator only
       if (ctrl_enable && !ctrl_hold && !deadband_skip) begin
-        ftw_correction_o <= ftw_corr_saturated;  // Use newly computed value
+        if (ctrl_prop_enable) begin
+          ftw_correction_o <= ftw_pi_final;  // PI mode
+        end else begin
+          ftw_correction_o <= ftw_corr_saturated;  // I-only mode (backward compatible)
+        end
       end else begin
-        ftw_correction_o <= ftw_corr;            // Use current state (held or disabled)
+        ftw_correction_o <= ftw_corr;  // Held or disabled
       end
       ftw_correction_valid_o <= 1'b1;
 
