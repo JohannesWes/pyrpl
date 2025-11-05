@@ -212,7 +212,8 @@ class Iq(FilterModule):
         modules with commensurate frequencies. This function must be called
         after having set the last iq frequency in order to be effective.
         """
-        self._synchronize(modules=['iq0', 'iq1', 'iq2'])
+        # IQ1 (module 6) removed to save FPGA resources; only iq0 and iq2 remain
+        self._synchronize(modules=['iq0', 'iq2'])
         self._logger.debug("All IQ modules synchronized!")
 
     def _setup(self): # the function is here for its docstring to be used by the metaclass.
@@ -405,3 +406,14 @@ class Iq(FilterModule):
         # add delay from phase (incorrect formula or missing effect...)
         tf *= np.exp(1j * self.phase / 180.0 * np.pi)
         return tf
+
+
+# Create named IQ classes to ensure proper naming: iq0 and iq2
+# (iq1/module 6 was removed to save FPGA resources)
+class Iq0(Iq):
+    """IQ module 0 (FPGA module 5) - Full-featured with all outputs"""
+    pass
+
+class Iq2(Iq):
+    """IQ module 2 (FPGA module 7) - Dual-output for spectrum analyzer"""
+    pass

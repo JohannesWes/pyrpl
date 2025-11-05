@@ -30,7 +30,7 @@ class TestPidNaIq(TestPyrpl):
         extradelay = self.extradelay
         # shortcuts and na configuration
         na = self.pyrpl.na
-        for iq in [r.iq0, r.iq1, r.iq2]:
+        for iq in [r.iq0, r.iq2]:  # iq1 (FPGA module 6) removed to save resources
             na._iq = iq
             na.setup(start_freq=3000,
                      stop_freq=10e6,
@@ -478,7 +478,7 @@ class TestPidNaIq(TestPyrpl):
         tests the sync feature of different iq modules
         """
         rp = self.pyrpl.rp
-        iqs = [rp.iq0, rp.iq1, rp.iq2]
+        iqs = [rp.iq0, rp.iq2]  # iq1 (FPGA module 6) removed to save resources
         for iq in iqs:
             iq.setup(input='iq0',
                  frequency=47e6,

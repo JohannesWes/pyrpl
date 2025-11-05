@@ -447,8 +447,12 @@ generate for (j = 5; j < 6; j = j+1) begin
 end endgenerate
 
 //IQ modules
+// IQ1 (Module 6) REMOVED to save FPGA resources
+// Spectrum analyzer uses IQ2, lock-in/ODMR/fgen3 use IQ0
+// Network analyzer can use IQ0 or IQ2 dynamically
+/*
 generate for (j = 6; j < 7; j = j+1) begin
-   red_pitaya_iq_block 
+   red_pitaya_iq_block
      iq
      (
        // data
@@ -474,6 +478,7 @@ generate for (j = 6; j < 7; j = j+1) begin
        .wdata (sys_wdata)
      );
 end endgenerate
+*/
 
 // IQ module with two outputs
 generate for (j = 7; j < 8; j = j+1) begin
@@ -503,14 +508,14 @@ generate for (j = 7; j < 8; j = j+1) begin
 end endgenerate
 
 assign iq0_phase_o = iq_phase[5];
-assign iq1_phase_o = iq_phase[6];
+assign iq1_phase_o = {PHASEBITS{1'b0}};  // IQ1 removed - tie to zero
 assign iq2_phase_o = iq_phase[7];
 
 assign iq0_sin_o = iq_sin[5];
 assign iq0_cos_o = iq_cos[5];
 assign iq0_sin_shifted_o = iq_sin_shifted[5];
 assign iq0_cos_shifted_o = iq_cos_shifted[5];
-assign iq1_sin_o = iq_sin[6];
+assign iq1_sin_o = {LUTBITS{1'b0}};  // IQ1 removed - tie to zero
 assign iq2_sin_o = iq_sin[7];
 
 assign inphase_iq_demod_o = inphase_iq_demod;

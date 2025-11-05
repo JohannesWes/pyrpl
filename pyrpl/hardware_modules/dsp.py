@@ -11,9 +11,9 @@ DSP_INPUTS = OrderedDict([
     ('out1', 12),
     ('out2', 13),
     ('iq0', 5),
-    ('iq1', 6),
-    ('iq2', 7),
-    ('iq2_2', 14),
+    # ('iq1', 6),  # IQ1 (module 6) REMOVED to save FPGA resources
+    ('iq2', 7),    # IQ2 kept at module 7
+    ('iq2_2', 14), # Second output of iq2 (dual-output for spectrum analyzer)
     ('pid0', 0),
     ('pid1', 1),
     ('pid2', 2),

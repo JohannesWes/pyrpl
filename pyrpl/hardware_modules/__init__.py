@@ -31,7 +31,7 @@ from .fgen3 import Fgen3
 # from .pid import Pid
 from .sampler import Sampler
 from .pwm import Pwm
-from .iq import Iq
+from .iq import Iq, Iq0, Iq2  # Iq0 and Iq2 are named classes (iq1/module 6 removed)
 from .iir import IIR
 from .ams import AMS
 from .trig import Trig
