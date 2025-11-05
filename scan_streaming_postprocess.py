@@ -13,6 +13,7 @@ This is the ONLY way to achieve full sample rate with RPyC.
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+from rpyc.utils.classic import obtain
 
 print("="*70)
 print("PyRPL Streaming - Post-Acquisition Conversion")
@@ -102,7 +103,8 @@ for i in range(0, len(rpyc_chunks), BATCH_SIZE):
     batch = rpyc_chunks[i:i+BATCH_SIZE]
     
     # Convert batch
-    batch_arrays = [np.array(chunk.tolist(), dtype='int32') for chunk in batch]
+
+    batch_arrays = [obtain(chunk) for chunk in batch]
     all_data.extend(batch_arrays)
     
     # Show progress
