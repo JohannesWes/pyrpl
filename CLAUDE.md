@@ -196,7 +196,7 @@ Lock-in (demod) → odmr_freq_lock (Region 8) → fgen3 (FTW correction) → Sca
 ```
 
 **Key Components:**
-- **`odmr_freq_lock_1f.v`** (FPGA): Integral-only frequency-locked loop at Region 8 (0x40800000)
+- **`odmr_freq_lock_1f.v`** (FPGA): Frequency-locked loop at Region 8 (0x40800000)
   - Demodulates 1f-I error signal from lock-in at ~30.5 kHz
   - Computes FTW correction using Q8.24 fixed-point arithmetic
   - Default bandwidth: 300 Hz (conservative start: 150 Hz)
