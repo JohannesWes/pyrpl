@@ -522,16 +522,31 @@ wire signed [PHASEBITS-1:0] ftw_pi_final = sat_pi_pos ? ftw_lim_signed :
 When the **PI sum saturates**, the integrator is **held** (not updated that cycle). This prevents integrator wind-up during sustained saturation:
 
 ```verilog
+// Compute unsaturated integrator update
+wire signed [PHASEBITS:0] sum_extended = $signed(ftw_corr) + $signed(delta_ftw);
+
+// Add P term to unsaturated integrator (correct order)
+wire signed [PHASEBITS:0] ftw_pi_sum = sum_extended + $signed(p_term);
+
+// Check saturation on full PI sum
+wire pi_saturated = (ftw_pi_sum > ftw_lim_signed) | (ftw_pi_sum < -ftw_lim_signed);
+
+// Anti-windup update logic:
 if (!deadband_skip) begin
     if (!pi_saturated) begin
-        ftw_corr <= ftw_corr_saturated;  // Update integrator
+        // Update integrator to UNSATURATED value (key fix)
+        ftw_corr <= sum_extended[PHASEBITS-1:0];
     end else begin
-        ftw_corr <= ftw_corr;           // Hold (anti-windup)
+        // Hold integrator when PI sum saturates
+        ftw_corr <= ftw_corr;
     end
 end
 ```
 
-**Benefit:** Fast recovery when leaving saturation—no overshoot from accumulated integral error.
+The integrator is updated to the **unsaturated** value `sum_extended`, not to a pre-saturated value. This allows the integrator to track correctly when the P term keeps the total output within limits, even if I alone would saturate.
+
+**Benefit:**
+- Fast recovery when leaving saturation—no overshoot from accumulated integral error
 
 #### Resource Impact
 

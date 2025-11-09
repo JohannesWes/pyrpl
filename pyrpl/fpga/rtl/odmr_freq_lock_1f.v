@@ -5,8 +5,6 @@
  * Implements an integral-only frequency-locked loop that drives a DDS frequency
  * correction based on demodulated lock-in I-quadrature signal.
  *
- * @author Generated via Claude Code
- * @date 2025-01-30
  *
  * THEORY OF OPERATION:
  * ====================
@@ -241,18 +239,11 @@ wire signed [63:0] product = -($signed(reg_mu_q) * $signed(err_conditioned));
 wire signed [63:0] product_rounded = product + (64'sd1 << (MU_QFRAC - 1));
 wire signed [PHASEBITS-1:0] delta_ftw = product_rounded[MU_QFRAC +: PHASEBITS];
 
-// Saturating addition
+// Compute unsaturated integrator update (extended precision for overflow detection)
 wire signed [PHASEBITS:0] sum_extended = $signed(ftw_corr) + $signed(delta_ftw);
 
-// Saturation logic
+// Saturation limit (signed interpretation)
 wire signed [PHASEBITS-1:0] ftw_lim_signed = $signed(reg_ftw_lim[PHASEBITS-1:0]);
-wire sat_pos = (sum_extended > ftw_lim_signed);
-wire sat_neg = (sum_extended < -ftw_lim_signed);
-wire saturated = sat_pos | sat_neg;
-
-wire signed [PHASEBITS-1:0] ftw_corr_saturated = sat_pos ? ftw_lim_signed :
-                                                  sat_neg ? -ftw_lim_signed :
-                                                  sum_extended[PHASEBITS-1:0];
 
 //-----------------------------------------------------------------------------
 // PROPORTIONAL PATH (PI CONTROL EXTENSION)
@@ -268,16 +259,31 @@ wire signed [PHASEBITS-1:0] p_term = (ctrl_prop_enable && !deadband_skip)
                                      ? delta_p_ftw
                                      : {PHASEBITS{1'b0}};
 
-// PI sum with saturation
-wire signed [PHASEBITS:0] ftw_pi_sum = $signed(ftw_corr_saturated) + $signed(p_term);
+// PI saturation
+// Compute full PI sum (unsaturated integrator + proportional term)
+wire signed [PHASEBITS:0] ftw_pi_sum = sum_extended + $signed(p_term);
+
+// Check saturation on full PI sum
 wire sat_pi_pos = (ftw_pi_sum > ftw_lim_signed);
 wire sat_pi_neg = (ftw_pi_sum < -ftw_lim_signed);
 wire pi_saturated = sat_pi_pos | sat_pi_neg;
 
+// Saturated PI output
 wire signed [PHASEBITS-1:0] ftw_pi_final =
     sat_pi_pos ? ftw_lim_signed :
     sat_pi_neg ? -ftw_lim_signed :
     ftw_pi_sum[PHASEBITS-1:0];
+
+// For I-only mode: separate saturation check on integrator path alone
+wire sat_i_pos = (sum_extended > ftw_lim_signed);
+wire sat_i_neg = (sum_extended < -ftw_lim_signed);
+wire saturated = sat_i_pos | sat_i_neg;
+
+// Saturated integrator value (used for I-only output and status reporting)
+wire signed [PHASEBITS-1:0] ftw_corr_saturated =
+    sat_i_pos ? ftw_lim_signed :
+    sat_i_neg ? -ftw_lim_signed :
+    sum_extended[PHASEBITS-1:0];
 
 // Lock detector: count consecutive samples below deadband
 wire in_lock_range = (err_abs < reg_deadband);
@@ -315,7 +321,8 @@ always @(posedge clk_i) begin
         if (!deadband_skip) begin
           // Anti-windup: Only update integrator if PI sum doesn't saturate
           if (!pi_saturated) begin
-            ftw_corr         <= ftw_corr_saturated;
+            // Update integrator to unsaturated value (correct PI anti-windup)
+            ftw_corr         <= sum_extended[PHASEBITS-1:0];
             flag_i_saturated <= saturated;
           end else begin
             // PI sum saturated: hold integrator (anti-windup)
