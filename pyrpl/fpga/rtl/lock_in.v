@@ -33,6 +33,8 @@ localparam EXTEND_BITS_TO_32 = 32 - (DATA_WIDTH + LUTBITS);
 // Control registers for system bus interface
 reg [1:0]  ref_select1;        // Channel 1: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
 reg [1:0]  ref_select2;        // Channel 2: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
+reg        fir_bypass_ch1;     // Bypass FIR for channel 1 (use CIC output directly)
+reg        fir_bypass_ch2;     // Bypass FIR for channel 2 (use CIC output directly)
 
 // Multiplexers for reference signal selection
 wire signed [LUTBITS-1:0] ref_signal_selected1;
@@ -94,6 +96,13 @@ wire signed [39:0]  decimator_output2;
 wire                dec_m_axis_data_tvalid1;
 wire                dec_m_axis_data_tvalid2;
 
+// Truncate CIC 40-bit output to 32-bit for bypass path
+// Drop 8 LSBs to match FIR's effective precision, preserve sign bit
+wire signed [31:0]  decimator_output1_32bit;
+wire signed [31:0]  decimator_output2_32bit;
+assign decimator_output1_32bit = decimator_output1[39:8];
+assign decimator_output2_32bit = decimator_output2[39:8];
+
 // CIC decimator instance - Channel 1
 cic_decimate_by_4096 cic_decimate_instance_ch1 (
   .aclk(clk_i),                                  // input wire aclk
@@ -140,14 +149,25 @@ fir_lowpass_500Hz fir_lowpass_inst_ch2 (
   .m_axis_data_tdata(fir_output2)                // output wire [31 : 0] m_axis_data_tdata
 );
 
+// Select between FIR output and truncated CIC output based on bypass flag
+wire signed [31:0] selected_output1;
+wire signed [31:0] selected_output2;
+wire               selected_valid1;
+wire               selected_valid2;
+
+assign selected_output1 = fir_bypass_ch1 ? decimator_output1_32bit : fir_output1;
+assign selected_output2 = fir_bypass_ch2 ? decimator_output2_32bit : fir_output2;
+assign selected_valid1  = fir_bypass_ch1 ? dec_m_axis_data_tvalid1 : fir_m_axis_data_tvalid1;
+assign selected_valid2  = fir_bypass_ch2 ? dec_m_axis_data_tvalid2 : fir_m_axis_data_tvalid2;
+
 // Output register assignment - Channel 1
 always @(posedge clk_i) begin
     if (!rstn_i) begin
         filtered_output1_o <= 32'b0;
         filtered_output1_valid_o <= 1'b0;
     end else begin
-        filtered_output1_o <= fir_output1;
-        filtered_output1_valid_o <= fir_m_axis_data_tvalid1;
+        filtered_output1_o <= selected_output1;
+        filtered_output1_valid_o <= selected_valid1;
     end
 end
 
@@ -157,23 +177,28 @@ always @(posedge clk_i) begin
         filtered_output2_o <= 32'b0;
         filtered_output2_valid_o <= 1'b0;
     end else begin
-        filtered_output2_o <= fir_output2;
-        filtered_output2_valid_o <= fir_m_axis_data_tvalid2;
+        filtered_output2_o <= selected_output2;
+        filtered_output2_valid_o <= selected_valid2;
     end
 end
 
 // System bus interface - write logic
 // Register map:
-//   0x000: ref_select1 (bits 1:0), ref_select2 (bits 3:2)
+//   0x000: ref_select1 (bits 1:0), ref_select2 (bits 3:2),
+//          fir_bypass_ch1 (bit 4), fir_bypass_ch2 (bit 5)
 always @(posedge clk_i) begin
     if (!rstn_i) begin
-        ref_select1 <= 2'd0;  // Default: sin
-        ref_select2 <= 2'd1;  // Default: cos
+        ref_select1 <= 2'd0;     // Default: sin
+        ref_select2 <= 2'd1;     // Default: cos
+        fir_bypass_ch1 <= 1'b0;  // Default: use FIR (bypass OFF)
+        fir_bypass_ch2 <= 1'b0;  // Default: use FIR (bypass OFF)
     end else begin
         if (sys_wen) begin
             if (sys_addr[19:0] == 20'h00000) begin
                 ref_select1 <= sys_wdata[1:0];
                 ref_select2 <= sys_wdata[3:2];
+                fir_bypass_ch1 <= sys_wdata[4];
+                fir_bypass_ch2 <= sys_wdata[5];
             end
         end
     end
@@ -192,7 +217,7 @@ always @(posedge clk_i) begin
         casez (sys_addr[19:0])
             20'h00000: begin
                 sys_ack   <= sys_en;
-                sys_rdata <= {28'b0, ref_select2, ref_select1};
+                sys_rdata <= {26'b0, fir_bypass_ch2, fir_bypass_ch1, ref_select2, ref_select1};
             end
             default: begin
                 sys_ack   <= sys_en;

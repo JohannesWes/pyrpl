@@ -19,7 +19,7 @@ Typical usage for I/Q demodulation:
 - Channel 2: ref_select2 = 'cos' (quadrature component)
 """
 
-from ..attributes import SelectRegister
+from ..attributes import SelectRegister, BoolRegister
 from ..modules import HardwareModule
 
 
@@ -34,7 +34,7 @@ class LockIn(HardwareModule):
 
     addr_base = 0x40700000
 
-    _setup_attributes = ['ref_select1', 'ref_select2']
+    _setup_attributes = ['ref_select1', 'ref_select2', 'fir_bypass_ch1', 'fir_bypass_ch2']
     _gui_attributes = _setup_attributes
 
     # Reference signal selection for channel 1 (bits 1:0 of address 0x000)
@@ -60,6 +60,24 @@ class LockIn(HardwareModule):
                                  doc="Channel 2 reference signal selection from IQ0 module. "
                                      "Choose which IQ0 output to use for demodulation. "
                                      "Use IQ0's demodulation_at_2f flags to control 1f vs 2f.")
+
+    # FIR bypass control for channel 1 (bit 4 of address 0x000)
+    fir_bypass_ch1 = BoolRegister(0x000,
+                                  bit=4,
+                                  default=False,
+                                  doc="Bypass FIR lowpass filter for channel 1. "
+                                      "When True: bandwidth ~15 kHz (CIC only), latency ~160 µs. "
+                                      "When False: bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                      "Bypassing the FIR reduces latency for fast control loops.")
+
+    # FIR bypass control for channel 2 (bit 5 of address 0x000)
+    fir_bypass_ch2 = BoolRegister(0x000,
+                                  bit=5,
+                                  default=False,
+                                  doc="Bypass FIR lowpass filter for channel 2. "
+                                      "When True: bandwidth ~15 kHz (CIC only), latency ~160 µs. "
+                                      "When False: bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                      "Bypassing the FIR reduces latency for fast control loops.")
 
     def _setup(self):
         """
