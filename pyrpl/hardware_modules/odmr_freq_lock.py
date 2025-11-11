@@ -396,8 +396,12 @@ class OdmrFreqLock(HardwareModule):
         Ts = 1.0 / 30517.578  # Sample period at decimated rate
         mu = (2 * np.pi * bandwidth_hz * Ts) / slope_lsb_per_hz
         self.mu_hz_per_lsb = mu
+
+        # Disable proportional control (integral-only mode)
+        self.prop_enable = False
+
         logger.info(f"ODMR lock bandwidth set to {bandwidth_hz} Hz "
-                   f"(μ = {mu:.6f} Hz/LSB, K = {slope_lsb_per_hz} LSB/Hz)")
+                   f"(μ = {mu:.6f} Hz/LSB, K = {slope_lsb_per_hz} LSB/Hz, integral-only)")
 
     def set_bandwidth_pi(self, bandwidth_hz, slope_lsb_per_hz=1.1, zero_ratio=3):
         """
