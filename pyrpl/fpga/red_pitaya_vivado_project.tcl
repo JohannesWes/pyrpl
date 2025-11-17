@@ -61,6 +61,7 @@ add_files                      $path_rtl/red_pitaya_top.v
 # Custom modules for FPGA (adapted from red_pitaya_vivado.tcl)
 add_files                      $path_rtl/red_pitaya_adv_trigger.v
 add_files                      $path_rtl/red_pitaya_saturate.v
+add_files                      $path_rtl/red_pitaya_saturate_rounded.v
 add_files                      $path_rtl/red_pitaya_product_sat.v
 add_files                      $path_rtl/red_pitaya_iir_block.v
 add_files                      $path_rtl/red_pitaya_iq_modulator_block.v
