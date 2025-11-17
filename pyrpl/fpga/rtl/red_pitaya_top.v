@@ -532,7 +532,7 @@ red_pitaya_asg i_asg (
 //---------------------------------------------------------------------------------
 //  DSP module
 
-wire signed [24-1:0] inphase_iq_demod;
+wire signed [14-1:0] iir_output;
 
 red_pitaya_dsp i_dsp (
    // signals
@@ -564,7 +564,7 @@ red_pitaya_dsp i_dsp (
   .iq1_sin_o       (  iq1_sin                    ),
   .iq2_sin_o       (  iq2_sin                    ),
 
-  .inphase_iq_demod_o (inphase_iq_demod),
+  .iir_output (iir_output),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -664,7 +664,7 @@ scan #(
     .rstn          (adc_rstn),
 
     // Data Input (Hardwired to adc_a currently)
-    .input_i       (inphase_iq_demod),
+    .input_i       (iir_output),
 
     // Trigger Output
     .trigger_o     (scan_trigger_o),
