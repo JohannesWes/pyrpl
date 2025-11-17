@@ -61,7 +61,6 @@ module red_pitaya_iq_block #(
    output     [ 14-1: 0] dat_o           ,  // output data
    output     [ 14-1: 0] signal_o        ,  // output data
    output     [ 14-1: 0] signal2_o       ,  // output data 2 (orthogonal quadrature)
-   output signed [ 24-1: 0] inphase_iq_demod,  // in-phase IQ output
 
    output     [PHASEBITS-1: 0] iq_phase_o      ,  // phase output
    output signed [LUTBITS-1:0] sin_out,
@@ -194,7 +193,7 @@ wire signed [14-1:0] dat_i_filtered;
 red_pitaya_filter_block #(
      .STAGES(INPUTFILTERSTAGES),
      .SHIFTBITS(INPUTFILTERSHIFTBITS),
-     .SIGNALBITS(24),
+     .SIGNALBITS(14),
      .MINBW(INPUTFILTERMINBW)
   )
   inputfilter
@@ -289,7 +288,7 @@ red_pitaya_filter_block #(
 
   */
   
-  assign inphase_iq_demod = quadrature1_hf;
+  
 
 /*
 //modulation, summing and direct output - Not required now.
@@ -373,8 +372,16 @@ red_pitaya_pfd_block pfd_block (
 // 				: (output_select==OUTPUT_DIRECT) ? dat_o
 // 				: (output_select==PFD) ? pfd_integral
 // 				: {SIGNALBITS{1'b0}};
+red_pitaya_saturate_rounded #(
+    .BITS_IN(24),
+    .BITS_OUT(14),
+    .SHIFT(10)
+) iq_saturator (
+    .input_i(quadrature1_hf),
+    .output_o(quadrature1_o)
+);
 
-assign signal_o = quadrature1_hf; 
+assign signal_o = quadrature1_o; 
 
 assign signal2_o = quadrature2_o;
 
