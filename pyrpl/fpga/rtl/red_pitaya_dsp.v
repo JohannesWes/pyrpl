@@ -89,8 +89,6 @@ module red_pitaya_dsp #(
    output     [PHASEBITS-1:0] iq1_phase_o,
    output     [PHASEBITS-1:0] iq2_phase_o,
 
-   output signed [24-1:0] inphase_iq_demod_o,
-
    // system bus
    input      [ 32-1: 0] sys_addr        ,  //!< bus address
    input      [ 32-1: 0] sys_wdata       ,  //!< bus write data
@@ -100,6 +98,9 @@ module red_pitaya_dsp #(
    output reg [ 32-1: 0] sys_rdata       ,  //!< bus read data
    output reg            sys_err         ,  //!< bus error indicator
    output reg            sys_ack            //!< bus acknowledge signal
+
+   // Output of IIR filter
+   output wire signed [14-1:0] iir_output;
 );
 
 localparam EXTRAMODULES = 2; //need two extra control registers for scope/asg
@@ -380,7 +381,7 @@ generate for (j = 3; j < 4; j = j+1) begin
 end
 endgenerate
 assign trig_o = trig_signal;
-wire signed [24-1:0] iir_output;
+
 
 // //IIR module 
  generate for (j = 4; j < 5; j = j+1) begin
@@ -388,8 +389,8 @@ wire signed [24-1:0] iir_output;
 // 	     // data
 	     .clk_i        (  clk_i          ),  // clock
 	     .rstn_i       (  rstn_i         ),  // reset - active low
-	     .dat_i        (  inphase_iq_demod ),  // input data
-	     .dat_o        ( iir_output ),  // output data
+	     .dat_i        (  input_signal [j]),  // input data
+	     .dat_o        (  output_direct[j]),  // output data
  		 //communincation with PS
  		 .addr ( sys_addr[16-1:0] ),
  		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
@@ -404,7 +405,6 @@ wire signed [24-1:0] iir_output;
 // additional IQ wires
 wire [PHASEBITS-1:0] iq_phase [7:0];
 wire signed [LUTBITS-1:0]   iq_sin [7:0];
-wire signed [24-1:0] inphase_iq_demod;
 
 //IQ modules
 generate for (j = 5; j < 6; j = j+1) begin
@@ -420,7 +420,6 @@ generate for (j = 5; j < 6; j = j+1) begin
        .signal_o     (  output_signal[j] ),  // output signal
        .iq_phase_o   (  iq_phase[j]      ),  // new phase output,
        .sin_out      (  iq_sin[j]    ),  // output sine signals
-       .inphase_iq_demod(inphase_iq_demod),
 
        // not using 2nd quadrature for most iq's: multipliers will be
        // synthesized away by Vivado
@@ -501,6 +500,6 @@ assign iq0_sin_o = iq_sin[5];
 //assign iq1_sin_o = iq_sin[6];
 //assign iq2_sin_o = iq_sin[7];
 
-assign inphase_iq_demod_o = iir_output;
+assign iir_output = output_direct[4];
 
 endmodule
