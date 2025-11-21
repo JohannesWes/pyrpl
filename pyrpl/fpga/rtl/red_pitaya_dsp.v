@@ -97,10 +97,10 @@ module red_pitaya_dsp #(
    input                 sys_ren         ,  //!< bus read enable
    output reg [ 32-1: 0] sys_rdata       ,  //!< bus read data
    output reg            sys_err         ,  //!< bus error indicator
-   output reg            sys_ack            //!< bus acknowledge signal
+   output reg            sys_ack         ,   //!< bus acknowledge signal
 
    // Output of IIR filter
-   output wire signed [14-1:0] iir_output;
+   output wire signed [14-1:0] iir_output
 );
 
 localparam EXTRAMODULES = 2; //need two extra control registers for scope/asg
