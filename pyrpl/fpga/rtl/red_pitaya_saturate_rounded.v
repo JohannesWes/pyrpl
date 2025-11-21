@@ -1,11 +1,3 @@
-/**
- * 
- * Saturating arithmetic with rounding for improved SNR
- * Adds 0.5 LSB before truncation (reduces quantization noise by ~6dB)
- * 
- *
- */
-
 module red_pitaya_saturate_rounded
 #( 
     parameter BITS_IN  = 24,
@@ -18,20 +10,25 @@ module red_pitaya_saturate_rounded
     output                       overflow
 );
 
-//-----------------------------------------------------------------------------
-// Rounding: Add 0.5 LSB (2^(SHIFT-1)) before shifting
-//-----------------------------------------------------------------------------
-wire signed [BITS_IN-1:0] rounded;
-assign rounded = input_i + (1 << (SHIFT-1));
+// Saturation limits
+localparam signed [BITS_OUT-1:0] MAX_VAL = {1'b0, {(BITS_OUT-1){1'b1}}};
+localparam signed [BITS_OUT-1:0] MIN_VAL = {1'b1, {(BITS_OUT-1){1'b0}}};
 
-//-----------------------------------------------------------------------------
-// Saturation with overflow detection
-//-----------------------------------------------------------------------------
-assign {output_o, overflow} = 
-    ({rounded[BITS_IN-1], |rounded[BITS_IN-2:SHIFT+BITS_OUT-1]} == 2'b01) ? 
-        {{1'b0, {BITS_OUT-1{1'b1}}}, 1'b1} :
-    ({rounded[BITS_IN-1], &rounded[BITS_IN-2:SHIFT+BITS_OUT-1]} == 2'b10) ? 
-        {{1'b1, {BITS_OUT-1{1'b0}}}, 1'b1} :
-    {rounded[SHIFT+BITS_OUT-1:SHIFT], 1'b0};
+// Round and shift
+wire signed [BITS_IN-1:0] rounded;
+wire signed [BITS_IN-1:0] shifted;
+assign rounded = input_i + (1 << (SHIFT-1));
+assign shifted = rounded >>> SHIFT;
+
+// Check for overflow
+wire pos_overflow = (shifted > {{(BITS_IN-BITS_OUT){1'b0}}, MAX_VAL});
+wire neg_overflow = (shifted < {{(BITS_IN-BITS_OUT){1'b1}}, MIN_VAL});
+
+// Output with saturation
+assign output_o = pos_overflow ? MAX_VAL :
+                  neg_overflow ? MIN_VAL :
+                  shifted[BITS_OUT-1:0];
+
+assign overflow = pos_overflow | neg_overflow;
 
 endmodule
