@@ -15,31 +15,31 @@
 #
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-############################################################################### 
+###############################################################################
 */
 //`timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
 // Company: LKB
-// Engineer: Leonhard Neuhaus 
-// 
+// Engineer: Leonhard Neuhaus
+//
 // Create Date: 10.12.2015 13:03:05
-// Design Name: 
+// Design Name:
 // Module Name: red_pitaya_iir_block
-// Project Name: 
-// Target Devices: 
-// Tool Versions: 
-// Description: 
-// 
-// Dependencies: 
-// 
+// Project Name:
+// Target Devices:
+// Tool Versions:
+// Description:
+//
+// Dependencies:
+//
 // Revision:
 // Revision 0.01 - File Created
 // Additional Comments:
-// 
+//
 // Design considerations
 // Try: Filter coefficients are represented as 100 bit numbers in IQ module
 // Upon a custom command, all coefficients are updated
-// Data for multiplication are always 18 bit numbers 
+// Data for multiplication are always 18 bit numbers
 // Must properly treat overflow conditions
 // Arbitrary (max 16) sequential execution of parallel modules
 // Choice over ZOH or averaging of input during the 16 sequences
@@ -49,7 +49,7 @@
 //address: 0x20000 or 0x30000-> treated by iq module
 //set address bit 16: goes into fgen module -> 0x2zzzz is free
 //0x2n000 for IQ-module number n
-
+ 
 //diret form:
 //
 //           sum_k^M ( b_k * z^-k )             b_0 + b_1/z
@@ -61,16 +61,16 @@
 //
 // we thus have to compute 4 products
 //////////////////////////////////////////////////////////////////////////////////
-
+ 
 module red_pitaya_iir_block
 #(  parameter IIRBITS = 32, //46        // iir coefficients represented with IIRBITS bits
     parameter IIRSHIFT = 29, //30       // iir coefficients FIXED POINT at bit IIRSHIFT
-    parameter IIRSTAGES = 1, //20       // maximum number of parallel biquads
+    parameter IIRSTAGES = 2, //20       // maximum number of parallel biquads
     parameter IIRSIGNALBITS = 32, //32,internally represent calculated results (32 is really necessary)
     parameter SIGNALBITS = 14,      // in- and output signal bitwidth
     parameter SIGNALSHIFT = 3, //5,       // over-represent input by SIGNALSHIFT bits (e.g. once input averaging is implemented)
     parameter LOOPBITS = 10, //8
-
+ 
    //parameters for input pre-filter
    parameter     FILTERSTAGES = 1,
    parameter     FILTERSHIFTBITS = 3,
@@ -82,26 +82,26 @@ module red_pitaya_iir_block
    input                 rstn_i          ,  // reset - active low
    input      [ 14-1: 0] dat_i           ,  // input data
    output reg [ 14-1: 0] dat_o           ,  // output data
-
+ 
    // communication with PS
    input      [ 16-1: 0] addr,
    input                 wen,
    input                 ren,
-   output reg   		 ack,
+   output reg            ack,
    output reg [ 32-1: 0] rdata,
    input      [ 32-1: 0] wdata
 );
-
-
+ 
+ 
 reg [LOOPBITS-1:0]     loops;
-reg     		on; 
-reg     		shortcut;
-//reg     		copydata;
+reg             on;
+reg             shortcut;
+//reg           copydata;
 reg [32-1:0]    overflow;   // accumulated overflows
 wire [7-1:0]    overflow_i; // instantaneous overflows
 reg [32-1:0]    iir_coefficients [0:IIRSTAGES*4*2-1];
 reg [ 32-1: 0]  set_filter;   // input filter setting
-
+ 
 always @(posedge clk_i) begin
    if (rstn_i == 1'b0) begin
       loops <= {LOOPBITS{1'b0}};
@@ -118,33 +118,33 @@ always @(posedge clk_i) begin
          if (addr==16'h120)   set_filter  <= wdata;
          if (addr[16-1]==1'b1)   iir_coefficients[addr[12-1:2]] <= wdata;
       end
-
-	  casez (addr)
-	     16'h100 : begin ack <= wen|ren; rdata <= {{32-LOOPBITS{1'b0}},loops}; end
-	     //16'h104 : begin ack <= wen|ren; rdata <= {{32-3{1'b0}},copydata,shortcut,on}; end
-	     16'h104 : begin ack <= wen|ren; rdata <= {{32-3{1'b0}},shortcut,on}; end
-	     16'h108 : begin ack <= wen|ren; rdata <= overflow; end
-
+ 
+      casez (addr)
+         16'h100 : begin ack <= wen|ren; rdata <= {{32-LOOPBITS{1'b0}},loops}; end
+         //16'h104 : begin ack <= wen|ren; rdata <= {{32-3{1'b0}},copydata,shortcut,on}; end
+         16'h104 : begin ack <= wen|ren; rdata <= {{32-3{1'b0}},shortcut,on}; end
+         16'h108 : begin ack <= wen|ren; rdata <= overflow; end
+ 
          16'h120 : begin ack <= wen|ren; rdata <= set_filter; end
-
-		 16'h200 : begin ack <= wen|ren; rdata <= IIRBITS; end
-		 16'h204 : begin ack <= wen|ren; rdata <= IIRSHIFT; end
-		 16'h208 : begin ack <= wen|ren; rdata <= IIRSTAGES; end
-
+ 
+         16'h200 : begin ack <= wen|ren; rdata <= IIRBITS; end
+         16'h204 : begin ack <= wen|ren; rdata <= IIRSHIFT; end
+         16'h208 : begin ack <= wen|ren; rdata <= IIRSTAGES; end
+ 
          16'h220 : begin ack <= wen|ren; rdata <= FILTERSTAGES; end
-	     16'h224 : begin ack <= wen|ren; rdata <= FILTERSHIFTBITS; end
-	     16'h228 : begin ack <= wen|ren; rdata <= FILTERMINBW; end
-
-		 // disable read-back of coefficients to save resources
-		 // this makes a big difference since it will allow the implementation of 
-		 // the coefficients as RAM and not as registers
-		 // 16'b1zzzzzzzzzzzzzzz: 	 begin ack <= wen|ren; rdata <= iir_coefficients[addr[12-1:2]]; end    
-
-	     default: begin ack <= wen|ren;  rdata <=  32'h0; end 
-	  endcase	     
+         16'h224 : begin ack <= wen|ren; rdata <= FILTERSHIFTBITS; end
+         16'h228 : begin ack <= wen|ren; rdata <= FILTERMINBW; end
+ 
+         // disable read-back of coefficients to save resources
+         // this makes a big difference since it will allow the implementation of
+         // the coefficients as RAM and not as registers
+         // 16'b1zzzzzzzzzzzzzzz:    begin ack <= wen|ren; rdata <= iir_coefficients[addr[12-1:2]]; end    
+ 
+         default: begin ack <= wen|ren;  rdata <=  32'h0; end
+      endcase        
    end
 end
-
+ 
 //-----------------------------
 // cascaded set of FILTERSTAGES low- or high-pass filters
 wire signed [SIGNALBITS+SIGNALSHIFT-1:0] dat_i_filtered;
@@ -162,14 +162,14 @@ red_pitaya_filter_block #(
   .dat_i({dat_i,{SIGNALSHIFT{1'b0}}}),
   .dat_o(dat_i_filtered)
   );
-
+ 
 /*
 //coefficient management - update coefficients when requested by copydata high transition
 reg signed [IIRBITS-1:0] b0_i [0:IIRSTAGES-1];
 reg signed [IIRBITS-1:0] b1_i [0:IIRSTAGES-1];
 reg signed [IIRBITS-1:0] a1_i [0:IIRSTAGES-1];
 reg signed [IIRBITS-1:0] a2_i [0:IIRSTAGES-1];
-
+ 
 integer i;
 always @(posedge clk_i) begin
     if (copydata == 1'b1) begin
@@ -182,14 +182,14 @@ always @(posedge clk_i) begin
     end        
 end
 */
-
+ 
 // coefficient management more resource-friendly - only one memory for
 // coefficients, update immediately -> requires reset after coefficient write
 wire signed [IIRBITS-1:0] b0_i [0:IIRSTAGES-1];
 wire signed [IIRBITS-1:0] b1_i [0:IIRSTAGES-1];
 wire signed [IIRBITS-1:0] a1_i [0:IIRSTAGES-1];
 wire signed [IIRBITS-1:0] a2_i [0:IIRSTAGES-1];
-
+ 
 integer i; // for later use
 genvar j;
 generate for (j=0; j<IIRSTAGES; j=j+1) begin
@@ -199,7 +199,7 @@ generate for (j=0; j<IIRSTAGES; j=j+1) begin
     assign a2_i[j] = {iir_coefficients[8*j+7],iir_coefficients[8*j+6]};
     end
 endgenerate
-
+ 
 // loop management - let stage0 repeatedly run from loops-1 to 0
 // stage_n contains the number stage0 with n cycles of delay
 reg [LOOPBITS-1:0] stage0;
@@ -234,41 +234,41 @@ always @(posedge clk_i) begin
     //stage5 <= stage4;
     //stage6 <= stage5;
 end
-
+ 
 //actual signal treatment
 reg signed [IIRBITS-1:0] a1;
 reg signed [IIRBITS-1:0] a2;
 reg signed [IIRBITS-1:0] b0;
 reg signed [IIRBITS-1:0] b1;
-
+ 
 //wire signed [IIRSIGNALBITS-1:0] x0;
 reg signed [IIRSIGNALBITS-1:0] x0;
 //assign x0 = {{IIRSIGNALBITS-SIGNALSHIFT-SIGNALBITS+1{dat_i[SIGNALBITS-1]}},dat_i[SIGNALBITS-2:0],{SIGNALSHIFT{1'b0}}};
 //assign x0 = $signed(dat_i_filtered);
-
+ 
 //averaging in x0_sum below
 //reg signed [IIRSIGNALBITS-1:0] x0_sum;
 //reg signed [IIRSIGNALBITS-1:0] x0;
-
+ 
 //reg signed [IIRSIGNALBITS-1:0] y0;
 reg signed [IIRSIGNALBITS-1:0] y1a;
 reg signed [IIRSIGNALBITS-1:0] y2a;
 reg signed [IIRSIGNALBITS-1:0] x0b;
 reg signed [IIRSIGNALBITS-1:0] x1b;
-
+ 
 reg signed [IIRSIGNALBITS-1:0] y1_i [0:IIRSTAGES-1];
 reg signed [IIRSIGNALBITS-1:0] y2_i [0:IIRSTAGES-1];
 reg signed [IIRSIGNALBITS-1:0] x1_i [0:IIRSTAGES-1];
 reg signed [IIRSIGNALBITS-1:0] x0_i [0:IIRSTAGES-1];
 //reg signed [IIRSIGNALBITS-1:0] x2_i [0:IIRSTAGES-1];
-
+ 
 //reg signed [IIRSIGNALBITS-1:0] z1_i [0:IIRSTAGES-1];
-
+ 
 //wire signed [IIRSIGNALBITS-1:0] p_ay1_over_2; // since a1 can go up to 2
 wire signed [IIRSIGNALBITS-1:0] p_ay1_full;
 wire signed [IIRSIGNALBITS-1:0] p_ay2_full;
-
-
+ 
+ 
 red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
  p_ay1_module (
   .factor1_i(y1a),
@@ -276,9 +276,9 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
   .product_o(p_ay1_full),
   .overflow (overflow_i[0])
   );
-
+ 
 //assign p_ay1_full = {p_ay1_over_2, 1'b0};
-
+ 
 red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
    p_ay2_module (
     .factor1_i(y2a),
@@ -288,8 +288,8 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
     );
 reg signed [IIRSIGNALBITS-1:0] p_ay1;
 reg signed [IIRSIGNALBITS-1:0] p_ay2;
-
-
+ 
+ 
 wire signed [IIRSIGNALBITS-1:0] p_bx0_full;
 wire signed [IIRSIGNALBITS-1:0] p_bx1_full;
 red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(IIRSHIFT), .BITS_OUT(IIRSIGNALBITS))
@@ -308,8 +308,8 @@ red_pitaya_product_sat #( .BITS_IN1(IIRSIGNALBITS), .BITS_IN2(IIRBITS), .SHIFT(I
      );
 reg signed [IIRSIGNALBITS-1:0] p_bx0;
 reg signed [IIRSIGNALBITS-1:0] p_bx1;
-
-
+ 
+ 
 wire signed [IIRSIGNALBITS+2-1:0] y_sum;
 assign y_sum = p_ay1 + p_ay2 + p_bx0 + p_bx1;
 wire signed [IIRSIGNALBITS-1:0] y_full;
@@ -319,8 +319,8 @@ red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+2), .SHIFT(0), .BITS_OUT(IIRSIGNA
    .output_o(y_full),
    .overflow (overflow_i[2])
     );
-
-
+ 
+ 
 //wire signed [IIRSIGNALBITS+2-1:0] z0_sum;
 //assign z0_sum = y0_full + p_bx0 + p_bx1;
 //wire signed [IIRSIGNALBITS-1:0] z0_full;
@@ -334,10 +334,10 @@ red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+2), .SHIFT(0), .BITS_OUT(IIRSIGNA
 //   .output_o(z0_full),
 //   .overflow (overflow_i[5])
 //   );
-
+ 
 reg signed [IIRSIGNALBITS-1:0] z0;
 //reg signed [IIRSIGNALBITS-1:0] z1;
-
+ 
 /* //former solution - adder tree (resource intensive)
 reg signed [IIRSIGNALBITS+4-1:0] dat_o_sum;
 always @(*) begin
@@ -345,7 +345,7 @@ always @(*) begin
    for (i=1;i<IIRSTAGES;i=i+1)
        dat_o_sum = dat_o_sum + z1_i[i];
 end
-
+ 
 wire [SIGNALBITS-1:0] dat_o_full;
 red_pitaya_saturate #( .BITS_IN (IIRSIGNALBITS+4), .SHIFT(SIGNALSHIFT), .BITS_OUT(SIGNALBITS))
    s_dat_o_module (
@@ -363,13 +363,13 @@ wire signed [SIGNALBITS-1:0] dat_o_full;
    .output_o(dat_o_full),
    .overflow (overflow_i[6])
    );
-
-
+ 
+ 
 reg signed [SIGNALBITS-1:0] signal_o;
-
+ 
 always @(posedge clk_i) begin
     // minimum delay implementation samples continuously new data
-  x0 <= dat_i_filtered<<<(IIRSIGNALBITS - SIGNALBITS - SIGNALSHIFT - 1);//(IIRSHIFT - SIGNALBITS - SIGNALSHIFT); // probably better to shift by IIRSIGNALBITS
+  x0 <= dat_i_filtered<<<(IIRSHIFT - SIGNALBITS - SIGNALSHIFT);//(IIRSHIFT - SIGNALBITS - SIGNALSHIFT); // probably better to shift by IIRSIGNALBITS
     //$display("x0:%0d", x0);
     if (on==1'b0) begin
         for (i=0;i<IIRSTAGES;i=i+1) begin
@@ -384,12 +384,15 @@ always @(posedge clk_i) begin
         y2a <= {IIRSIGNALBITS{1'b0}};
         x1b <= {IIRSIGNALBITS{1'b0}};
         z0  <= {IIRSIGNALBITS{1'b0}};
-
+        x0b <= {IIRSIGNALBITS{1'b0}};  // ADD THIS
+        x0  <= {IIRSIGNALBITS{1'b0}};  // ADD THIS - THE CRITICAL FIX!
+        dat_o_sum <= {(IIRSIGNALBITS+4){1'b0}};
+ 
         a1 <= {IIRBITS{1'b0}};
         a2 <= {IIRBITS{1'b0}};
         b0 <= {IIRBITS{1'b0}};
         b1 <= {IIRBITS{1'b0}};
-
+ 
         p_ay1 <= {IIRSIGNALBITS{1'b0}};
         p_ay2 <= {IIRSIGNALBITS{1'b0}};
         p_bx0 <= {IIRSIGNALBITS{1'b0}};
@@ -407,23 +410,23 @@ always @(posedge clk_i) begin
             a1 <= a1_i[stage0];
             y2a <= y2_i[stage0];
             a2 <= a2_i[stage0];
-
+ 
             b0 <= b0_i[stage0];
             b1 <= b1_i[stage0];
             x0b<= x0;
             x1b<= x1_i[stage0];
-
+ 
             x0_i[stage0]<=x0;
         end
         //cycle n+1
         if (stage1<IIRSTAGES) begin
             p_ay1 <= p_ay1_full;
             p_ay2 <= p_ay2_full;
-
+ 
             p_bx0 <= p_bx0_full;
             p_bx1 <= p_bx1_full;
         end
-
+ 
         //cycle n+2
         if (stage2<IIRSTAGES) begin
             //y0 <= y0_full;//no saturation here, because y0 is two bits longer than other signals
@@ -442,12 +445,13 @@ always @(posedge clk_i) begin
         //if (stage4<IIRSTAGES) begin
             //z0 <= y_full;
         //end
-
+ 
         // from step IIRSTAGES-1 to 0 (IIRSTAGES steps), increment the sum
-
+ 
         //cycle n+5
         // start with a reset when the highest stage corresponding to an iir
         // filter being executed
+        /*
         if (stage3 == (loops-1) || stage3 == (IIRSTAGES-1)) begin
             dat_o_sum <= z0;
         end
@@ -457,6 +461,18 @@ always @(posedge clk_i) begin
         end
         // once cycle of 5 is complete, output the fresh sum (after saturation)
         if (stage4 == 0) begin
+            signal_o <= dat_o_full;
+        end
+        */
+        if (stage3 == loops-1) begin  // Changed: removed IIRSTAGES-1 condition
+            dat_o_sum <= z0;
+        end
+        else if (stage3 < IIRSTAGES) begin  // Only accumulate if processing stages
+            dat_o_sum <= dat_o_sum + z0;
+        end
+       
+        // FIX 3: Output at correct time
+        if (stage4 == 1) begin  // Changed from 0 to 1
             signal_o <= dat_o_full;
         end
     end
@@ -475,10 +491,10 @@ always @(posedge clk_i) begin
   end
   //$display("p_ay1_over_2: %d", p_ay1_over_2);
   //$display("p_ay1_full: %d", p_ay1_full);
-
+ 
   $fwrite(fdebug,"%d\n", x0);
   //$display("z0: %d", z0);
   //$display("x0: %b", x0);
 end
-
+ 
 endmodule
