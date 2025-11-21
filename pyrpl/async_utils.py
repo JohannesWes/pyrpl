@@ -37,7 +37,12 @@ import logging
 from qtpy import QtWidgets
 import asyncio
 from asyncio import TimeoutError, futures
-from asyncio.tasks import __sleep0
+try:
+    from asyncio.tasks import __sleep0 as _sleep0
+except ImportError:
+    async def _sleep0():
+        await asyncio.sleep(0)
+#from asyncio.tasks import __sleep0
 import qasync
 import math
 
@@ -72,7 +77,7 @@ async def sleep_async(delay, result=None):
     """
 
     if delay <= 0:
-        await __sleep0()
+        await _sleep0()
         return result
 
     if math.isnan(delay):
