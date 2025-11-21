@@ -382,6 +382,7 @@ red_pitaya_saturate_rounded #(
 );
 
 assign signal_o = quadrature1_o; 
+assign dat_o = quadrature1_o; 
 
 assign signal2_o = quadrature2_o;
 
