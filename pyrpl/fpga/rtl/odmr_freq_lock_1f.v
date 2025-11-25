@@ -1,9 +1,9 @@
 /**
  * @file odmr_freq_lock_1f.v
- * @brief ODMR Frequency-Locked Loop (1f-I Component)
+ * @brief ODMR Frequency-Locked Loop (1f-I Component with PI Control)
  *
- * Implements an integral-only frequency-locked loop that drives a DDS frequency
- * correction based on demodulated lock-in I-quadrature signal.
+ * Implements a configurable frequency-locked loop (I-only or PI mode) that drives
+ * a DDS frequency correction based on demodulated lock-in I-quadrature signal.
  *
  *
  * THEORY OF OPERATION:
@@ -11,14 +11,22 @@
  * Around resonance, demodulated 1f-I output is proportional to detuning:
  *   e[n] ≈ K * (f0[n] - fr[n])
  *
- * Integral controller in frequency domain:
+ * Control modes (selected by prop_enable bit):
+ *
+ * INTEGRAL-ONLY (prop_enable=0, default for backward compatibility):
  *   f0[n+1] = f0[n] - μ * e[n]  (μ = K_i * T_s with integral gain K_i and sample time T_s)
  *
+ * PI CONTROL (prop_enable=1, faster acquisition and improved phase margin):
+ *   u[n] = K_p * e[n] + x[n]    (parallel PI form)
+ *   x[n+1] = x[n] - μ * e[n]    (integral state update)
+ *
  * Implemented in DDS units (Frequency Tuning Words):
- *   FTW_corr[n+1] = FTW_corr[n] - μ_FTW * e[n]
+ *   FTW_corr[n+1] = FTW_corr[n] - μ_FTW * e[n]           (I-only mode)
+ *   FTW_out[n] = FTW_corr[n] - K_p,FTW * e[n]            (PI mode)
  *
  * Where:
- *   μ_FTW = μ * (2^PHASEBITS / f_clk)  [FTW/LSB, stored in Q8.24 format]
+ *   μ_FTW = μ * (2^PHASEBITS / f_clk)      [FTW/LSB, stored in Q8.24 format]
+ *   K_p,FTW = K_p * (2^PHASEBITS / f_clk)  [FTW/LSB, stored in Q8.24 format]
  *
  * DESIGN PARAMETERS (from planning doc):
  * ======================================
@@ -31,14 +39,14 @@
  *
  * REGISTER MAP (System Bus Region 8):
  * ====================================
- * 0x0000  CTRL        [RW]  Control bits (enable, invert, hold, clr, deadband_en)
+ * 0x0000  CTRL        [RW]  Control bits (enable, invert, hold, clr, deadband_en, prop_enable)
  * 0x0004  MU_Q        [RW]  Integral gain μ_FTW in Q8.24 format
  * 0x0008  DEADBAND    [RW]  Error deadband threshold (unsigned LSB)
  * 0x000C  FTW_LIM     [RW]  Saturation limit for FTW correction (unsigned)
- * 0x0010  STATUS      [R ]  Status flags (locked, saturated)
+ * 0x0010  STATUS      [R ]  Status flags (locked, saturated, saturated_i, saturated_pi)
  * 0x0014  ERR_LATCH   [R ]  Last error value that produced update
  * 0x0018  FTW_CORR    [R ]  Current FTW correction value (signed)
- * 0x001C  RESERVED    [RW]  Reserved for future use
+ * 0x001C  KP_Q        [RW]  Proportional gain K_p,FTW in Q8.24 format
  */
 
 module odmr_freq_lock_1f #(

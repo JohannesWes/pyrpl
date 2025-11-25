@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ODMR Frequency Lock Module (1f-I Component)
+ODMR Frequency Lock Module (1f-I Component with PI Control)
 
 This module implements a frequency-locked loop (FLL) that tracks the resonance
 frequency of a physical system by locking a DDS-generated frequency to the
@@ -10,14 +10,19 @@ zero-crossing of a demodulated lock-in signal.
 THEORY OF OPERATION
 ================================================================================
 
-The ODMR frequency lock uses integral control to maintain the demodulated
-1f I-quadrature signal at zero by adjusting the DDS center frequency:
+The ODMR frequency lock supports two control modes:
 
+INTEGRAL-ONLY MODE (default, prop_enable=False):
     FTW_corr[n+1] = FTW_corr[n] - μ_FTW * e[n]
+
+PI MODE (prop_enable=True, faster acquisition):
+    u[n] = K_p,FTW * e[n] + x[n]    (parallel PI form)
+    x[n+1] = x[n] - μ_FTW * e[n]     (integral state)
 
 Where:
     - e[n]: Demodulated error signal (LSB from lock_in channel 1)
     - μ_FTW: Integral gain in Q8.24 fixed-point format (FTW/LSB)
+    - K_p,FTW: Proportional gain in Q8.24 fixed-point format (FTW/LSB)
     - FTW_corr: Frequency Tuning Word correction sent to 3FGEN
 
 ================================================================================
@@ -30,18 +35,22 @@ Phase bits: 32 (matching 3FGEN DDS)
 Gain format: Q8.24 fixed-point (8 integer bits, 24 fractional bits)
 
 Default Values (for K=1.1 LSB/Hz, 300 Hz bandwidth):
-    - mu_q: 0x01EDE8D0 ≈ 1.929 FTW/LSB
+    - mu_q: 0x01EDE8D0 ≈ 1.929 FTW/LSB (integral gain)
+    - kp_q: 0x5DB55838 ≈ 93.71 FTW/LSB (proportional gain, zero at BW/3)
     - ftw_lim: 34359738 (±1 MHz correction range)
 
 ================================================================================
 TYPICAL USAGE
 ================================================================================
 
->>> # Initialize and configure
+>>> # Initialize and configure (integral-only mode)
 >>> odm = pyrpl.rp.odmr_freq_lock
 >>> odm.enable = False
->>> odm.mu_hz_per_lsb = 0.05615  # Sets gain for 300 Hz BW
+>>> odm.set_bandwidth(300, slope_lsb_per_hz=1.1)  # I-only, 300 Hz BW
 >>> odm.max_correction_hz = 1e6  # ±1 MHz range
+>>>
+>>> # Or use PI mode for faster acquisition
+>>> odm.set_bandwidth_pi(300, slope_lsb_per_hz=1.1, zero_ratio=3)
 >>>
 >>> # Check polarity by manually stepping frequency
 >>> odm.invert = False  # Adjust if loop has wrong sign
@@ -70,16 +79,21 @@ Control:
     hold: Freeze integrator (stop updates)
     clear: Clear integrator to zero (self-clearing)
     deadband_enable: Enable deadband threshold
+    prop_enable: Enable proportional path (PI mode)
 
 Tuning:
-    mu_q: Raw gain in Q8.24 format (FTW/LSB)
-    mu_hz_per_lsb: Gain in Hz/LSB units
+    mu_q: Raw integral gain in Q8.24 format (FTW/LSB)
+    mu_hz_per_lsb: Integral gain in Hz/LSB units
+    kp_q: Raw proportional gain in Q8.24 format (FTW/LSB)
+    kp_hz_per_lsb: Proportional gain in Hz/LSB units
     deadband_lsb: Deadband threshold in error LSB
     max_correction_hz: Maximum frequency correction in Hz
 
 Status (read-only):
     locked: True if error below threshold for 256 samples
-    saturated: True if correction hit saturation limit
+    saturated: True if any correction hit saturation limit (legacy)
+    saturated_i: True if integrator path hit saturation limit
+    saturated_pi: True if PI sum hit saturation limit
     error_lsb: Last error value that produced an update
     correction_hz: Current frequency correction in Hz
     correction_ftw: Current frequency correction in FTW units
@@ -119,8 +133,10 @@ class OdmrFreqLock(HardwareModule):
     """
     ODMR Frequency Lock hardware module (System Bus Region 8).
 
-    Implements integral-only frequency-locked loop for tracking resonance
-    frequency via demodulated lock-in signal.
+    Implements configurable frequency-locked loop (I-only or PI mode) for tracking
+    resonance frequency via demodulated lock-in signal. Defaults to integral-only
+    mode for backward compatibility; enable PI mode with prop_enable=True for
+    faster acquisition and improved phase margin.
     """
 
     addr_base = 0x40800000  # Region 8
@@ -381,7 +397,10 @@ class OdmrFreqLock(HardwareModule):
 
     def set_bandwidth(self, bandwidth_hz, slope_lsb_per_hz=1.1):
         """
-        Set loop bandwidth by computing appropriate integral gain.
+        Set loop bandwidth for INTEGRAL-ONLY mode by computing appropriate integral gain.
+
+        This method configures the loop for I-only operation (prop_enable=False).
+        For PI control with faster acquisition, use set_bandwidth_pi() instead.
 
         Args:
             bandwidth_hz (float): Desired closed-loop bandwidth in Hz

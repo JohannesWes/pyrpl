@@ -416,6 +416,7 @@ class Scan(HardwareModule):
             avail = min(avail, int(max_samples))
 
         # We may need to read in two segments (until end, then wrap)
+        # TODO: Check if reading in two segments is potentially inefficient due to read overheads 
         first_len = min(avail, depth - rd)
         segs = []
         if first_len > 0:
@@ -465,6 +466,7 @@ class Scan(HardwareModule):
         Yields:
             np.ndarray int32
         """
+        # TODO: Check if this will block other operations. If so, potentially use async as in scope module.
         while getattr(self, '_stream_active', False):
             arr = self.stream_read(max_samples=batch)
             if arr.size:
@@ -576,6 +578,7 @@ class Scan(HardwareModule):
         logger.info("Scan sweep finished.")
         return True
 
+    # TODO: improve naming, to differentiate method names between stream and scan modes
     def get_data(self, average=True):
         """
         Reads the accumulated data from the FPGA BRAM after a sweep.

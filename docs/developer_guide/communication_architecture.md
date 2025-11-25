@@ -359,14 +359,14 @@ From `mmap()` to FPGA register is **direct memory access** - no data copying occ
 
 ### DMA via AXI HP Ports
 
-For high-throughput data transfers (e.g., scope data acquisition), PyRPL uses **AXI HP (High Performance)** ports:
+For high-throughput data transfers (e.g., scope data acquisition), PyRPL could use **AXI HP (High Performance)** ports. This is currently not implemented (fully) however:
 
 - **File:** `red_pitaya_ps.v:143-212` defines `axi_master` modules
 - **Purpose:** Direct Memory Access from FPGA to ARM DDR RAM
 - **Bandwidth:** Up to 1200 MB/s per port (much faster than GP0)
 - **Use case:** Streaming scope data, large buffer transfers
 
-The Scan module can write directly to DDR memory via these ports for high-speed data acquisition.
+The Scan module could in the future write directly to DDR memory via these ports for high-speed data acquisition.
 
 ---
 
@@ -384,7 +384,7 @@ The Scan module can write directly to DDR memory via these ports for high-speed 
 1. **Latency** - Network + syscalls add ~50 µs overhead per register access
 2. **Security** - Requires root and `/dev/mem` access
 3. **Single client** - Only one TCP connection at a time (though multiple clients can be spawned)
-4. **No DMA for registers** - Each register access is individual (but bulk transfers use HP ports)
+4. **No DMA for registers** - Each register access is individual
 
 ---
 
@@ -409,29 +409,6 @@ The Scan module can write directly to DDR memory via these ports for high-speed 
 - AXI4-Lite specification (ARM IHI0022E)
 - Red Pitaya schematics and documentation
 
----
-
-## Debugging Tips
-
-### Python Side
-```python
-import logging
-logging.getLogger('pyrpl.redpitaya_client').setLevel(logging.DEBUG)
-# Shows all register reads/writes with addresses and values
-```
-
-### C Server Side
-```c
-// In monitor_server.c, set DEBUG_MONITOR to 1 (line 92)
-#define DEBUG_MONITOR 1
-// Recompile and upload to Red Pitaya
-// Logs will appear on SSH console
-```
-
-### FPGA Side
-- Use Vivado ILA (Integrated Logic Analyzer) to capture AXI transactions
-- Monitor `sys_addr`, `sys_wdata`, `sys_wen`, `sys_ack` signals
-- Check timing reports for address decoding logic
 
 ---
 
