@@ -570,6 +570,7 @@ red_pitaya_asg i_asg (
 //  DSP module
 
 wire signed [24-1:0] inphase_iq_demod;
+wire signed [14-1:0] iir_output;
 
 red_pitaya_dsp i_dsp (
    // signals
@@ -605,6 +606,7 @@ red_pitaya_dsp i_dsp (
   .iq2_sin_o       (  iq2_sin                    ),
 
   .inphase_iq_demod_o (inphase_iq_demod),
+  .iir_output (iir_output),
 
   // System bus
   .sys_addr        (  sys_addr                   ),  // address
@@ -715,7 +717,7 @@ scan #(
     .rstn          (adc_rstn),
 
     // Data Inputs - ADC, IQ, demod, and FTW correction
-    .adc_input_i   (adc_a),
+    .adc_input_i   (iir_output), # todo: not so elegant, maybe rename adc_input_i to data_14_bit_i or sth similar
     .iq_input_i    (inphase_iq_demod),
     .demod_input_i (demod_filtered_data1),        // Using lock-in channel 1
     .demod_input_valid_i (demod_filtered_tvalid1),

@@ -79,6 +79,7 @@ read_verilog                      $path_rtl/red_pitaya_top.v
 #custom modules
 read_verilog                      $path_rtl/red_pitaya_adv_trigger.v
 read_verilog                      $path_rtl/red_pitaya_saturate.v
+read_verilog                      $path_rtl/red_pitaya_saturate_rounded.v
 read_verilog                      $path_rtl/red_pitaya_product_sat.v
 read_verilog                      $path_rtl/red_pitaya_iir_block.v
 read_verilog                      $path_rtl/red_pitaya_iq_modulator_block.v

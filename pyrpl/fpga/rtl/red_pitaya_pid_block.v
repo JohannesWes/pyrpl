@@ -101,11 +101,11 @@ reg signed [ 16-1: 0] set_ival;   // integral value to set
 reg            ival_write;
 reg [  3-1: 0] pause_pid_on_sync;  // register to specify which gains (P, I, and/or D) are paused during active sync signal
 reg enable_differential_mode;  // register to specify which gains (P, I, and/or D) are paused during active sync signal
-wire pause_i_on_sync;
+wire pause_i;
 assign pause_i = pause_pid_on_sync[0] & !sync_i;
-wire pause_p_on_sync;
+wire pause_p;
 assign pause_p = pause_pid_on_sync[1] & !sync_i;
-wire pause_d_on_sync;
+wire pause_d;
 assign pause_d = pause_pid_on_sync[2] & !sync_i;
 reg [ GAINBITS-1: 0] set_kp;   // Kp
 reg [ GAINBITS-1: 0] set_ki;   // Ki
@@ -114,12 +114,12 @@ reg [ 32-1: 0] set_filter;   // filter setting
 // limits if arbitrary saturation is enabled
 reg signed [ 14-1:0] out_max;
 reg signed [ 14-1:0] out_min;
-wire signed [IBW-ISR-1: 0] int_shr   ;
 
 //formerly
 //-localparam IBW = 64; //integrator bit-width. Over-represent the integral sum to record longterm drifts
 //-reg   [15+GAINBITS-1: 0] ki_mult  ;
 localparam IBW = ISR+16; //integrator bit-width. Over-represent the integral sum to record longterm drifts (overrepresented by 2 bits)
+wire signed [IBW-ISR-1: 0] int_shr   ;
 reg signed  [16+GAINBITS-1: 0] ki_mult ;
 wire signed [IBW  : 0] int_sum       ;
 reg signed  [IBW-1: 0] int_reg       ;

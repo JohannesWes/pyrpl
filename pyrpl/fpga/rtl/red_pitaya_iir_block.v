@@ -65,7 +65,7 @@
 module red_pitaya_iir_block
 #(  parameter IIRBITS = 32, //46        // iir coefficients represented with IIRBITS bits
     parameter IIRSHIFT = 29, //30       // iir coefficients FIXED POINT at bit IIRSHIFT
-    parameter IIRSTAGES = 14, //20       // maximum number of parallel biquads
+    parameter IIRSTAGES = 2, //20       // maximum number of parallel biquads
     parameter IIRSIGNALBITS = 32, //32,internally represent calculated results (32 is really necessary)
     parameter SIGNALBITS = 14,      // in- and output signal bitwidth
     parameter SIGNALSHIFT = 3, //5,       // over-represent input by SIGNALSHIFT bits (e.g. once input averaging is implemented)
@@ -369,7 +369,7 @@ reg signed [SIGNALBITS-1:0] signal_o;
 
 always @(posedge clk_i) begin
     // minimum delay implementation samples continuously new data
-  x0 <= dat_i_filtered<<<(IIRSIGNALBITS - SIGNALBITS - SIGNALSHIFT - 1);//(IIRSHIFT - SIGNALBITS - SIGNALSHIFT); // probably better to shift by IIRSIGNALBITS
+  x0 <= dat_i_filtered<<<(IIRSHIFT - SIGNALBITS - SIGNALSHIFT);//(IIRSHIFT - SIGNALBITS - SIGNALSHIFT); // probably better to shift by IIRSIGNALBITS
     //$display("x0:%0d", x0);
     if (on==1'b0) begin
         for (i=0;i<IIRSTAGES;i=i+1) begin
@@ -384,6 +384,9 @@ always @(posedge clk_i) begin
         y2a <= {IIRSIGNALBITS{1'b0}};
         x1b <= {IIRSIGNALBITS{1'b0}};
         z0  <= {IIRSIGNALBITS{1'b0}};
+        x0b <= {IIRSIGNALBITS{1'b0}};  // ADD THIS
+        x0  <= {IIRSIGNALBITS{1'b0}};  // ADD THIS - THE CRITICAL FIX!
+        dat_o_sum <= {(IIRSIGNALBITS+4){1'b0}};
 
         a1 <= {IIRBITS{1'b0}};
         a2 <= {IIRBITS{1'b0}};
@@ -448,6 +451,7 @@ always @(posedge clk_i) begin
         //cycle n+5
         // start with a reset when the highest stage corresponding to an iir
         // filter being executed
+        /*
         if (stage3 == (loops-1) || stage3 == (IIRSTAGES-1)) begin
             dat_o_sum <= z0;
         end
@@ -457,6 +461,18 @@ always @(posedge clk_i) begin
         end
         // once cycle of 5 is complete, output the fresh sum (after saturation)
         if (stage4 == 0) begin
+            signal_o <= dat_o_full;
+        end
+        */
+        if (stage3 == loops-1) begin  // Changed: removed IIRSTAGES-1 condition
+            dat_o_sum <= z0;
+        end
+        else if (stage3 < IIRSTAGES) begin  // Only accumulate if processing stages
+            dat_o_sum <= dat_o_sum + z0;
+        end
+
+        // FIX 3: Output at correct time
+        if (stage4 == 1) begin  // Changed from 0 to 1
             signal_o <= dat_o_full;
         end
     end

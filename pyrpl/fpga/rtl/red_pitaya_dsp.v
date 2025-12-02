@@ -102,7 +102,10 @@ module red_pitaya_dsp #(
    input                 sys_ren         ,  //!< bus read enable
    output reg [ 32-1: 0] sys_rdata       ,  //!< bus read data
    output reg            sys_err         ,  //!< bus error indicator
-   output reg            sys_ack            //!< bus acknowledge signal
+   output reg            sys_ack         ,   //!< bus acknowledge signal
+
+   // Output of IIR filter
+   output wire signed [14-1:0] iir_output
 );
 
 localparam EXTRAMODULES = 2; //need two extra control registers for scope/asg
@@ -384,25 +387,24 @@ end
 endgenerate
 assign trig_o = trig_signal;
 
-// //IIR module 
-// generate for (j = 4; j < 5; j = j+1) begin
-//     red_pitaya_iir_block iir (
-// 	     // data
-// 	     .clk_i        (  clk_i          ),  // clock
-// 	     .rstn_i       (  rstn_i         ),  // reset - active low
-// 	     .dat_i        (  input_signal [j] ),  // input data
-// 	     .dat_o        (  output_direct[j]),  // output data
 
-// 		 //communincation with PS
-// 		 .addr ( sys_addr[16-1:0] ),
-// 		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
-// 		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
-// 		 .ack  ( module_ack[j] ),
-// 		 .rdata (module_rdata[j]),
-// 	     .wdata (sys_wdata)
-//       );
-// 	  assign output_signal[j] = output_direct[j];
-// end endgenerate
+// //IIR module
+ generate for (j = 4; j < 5; j = j+1) begin
+  red_pitaya_iir_block iir (
+// 	     // data
+	     .clk_i        (  clk_i          ),  // clock
+	     .rstn_i       (  rstn_i         ),  // reset - active low
+	     .dat_i        (  input_signal [j]),  // input data
+	     .dat_o        (  output_direct[j]),  // output data
+ 		 //communincation with PS
+ 		 .addr ( sys_addr[16-1:0] ),
+ 		 .wen  ( sys_wen & (sys_addr[20-1:16]==j) ),
+ 		 .ren  ( sys_ren & (sys_addr[20-1:16]==j) ),
+		 .ack  ( module_ack[j] ),
+		 .rdata (module_rdata[j]),
+ 	     .wdata (sys_wdata)
+      );
+ end endgenerate
 
 
 // additional IQ wires
@@ -519,5 +521,6 @@ assign iq1_sin_o = {LUTBITS{1'b0}};  // IQ1 removed - tie to zero
 assign iq2_sin_o = iq_sin[7];
 
 assign inphase_iq_demod_o = inphase_iq_demod;
+assign iir_output = output_direct[4];
 
 endmodule
