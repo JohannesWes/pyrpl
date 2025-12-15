@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(dir /b \"C:\\Users\\aj92uwef\\PycharmProjects\\pyrpl_new\\pyrpl\\fpga\\ip\\fir_lowpass_500Hz\")",
+      "Bash(dir /b \"C:\\Users\\aj92uwef\\PycharmProjects\\pyrpl_new\\pyrpl\\fpga\\ip\\fir_lowpass_2000Hz\")",
+      "Bash(dir /b \"C:\\Users\\aj92uwef\\PycharmProjects\\pyrpl_new\\pyrpl\\fpga\\ip\\fir_lowpass_5000Hz\")",
+      "Bash(unzip:*)",
+      "Bash(vivado:*)",
+      "Bash(cat:*)",
+      "Bash(cmd //c make.bat)",
+      "Bash(./make.bat)",
+      "Bash(./copy_and_make.bat)"
     ],
     "deny": [],
     "ask": []

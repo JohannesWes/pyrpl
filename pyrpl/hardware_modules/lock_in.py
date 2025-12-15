@@ -34,7 +34,7 @@ class LockIn(HardwareModule):
 
     addr_base = 0x40700000
 
-    _setup_attributes = ['ref_select1', 'ref_select2', 'fir_bypass_ch1', 'fir_bypass_ch2']
+    _setup_attributes = ['ref_select1', 'ref_select2', 'fir_bypass_ch1', 'fir_bypass_ch2', 'filter_select_ch1', 'filter_select_ch2']
     _gui_attributes = _setup_attributes
 
     # Reference signal selection for channel 1 (bits 1:0 of address 0x000)
@@ -67,7 +67,7 @@ class LockIn(HardwareModule):
                                   default=False,
                                   doc="Bypass FIR lowpass filter for channel 1. "
                                       "When True: bandwidth ~15 kHz (CIC only), latency ~160 µs. "
-                                      "When False: bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                      "When False: bandwidth determined by filter_select_ch1 (CIC+FIR). "
                                       "Bypassing the FIR reduces latency for fast control loops.")
 
     # FIR bypass control for channel 2 (bit 5 of address 0x000)
@@ -76,8 +76,32 @@ class LockIn(HardwareModule):
                                   default=False,
                                   doc="Bypass FIR lowpass filter for channel 2. "
                                       "When True: bandwidth ~15 kHz (CIC only), latency ~160 µs. "
-                                      "When False: bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                      "When False: bandwidth determined by filter_select_ch2 (CIC+FIR). "
                                       "Bypassing the FIR reduces latency for fast control loops.")
+
+    # Filter selection for channel 1 (bits 7:6 of address 0x000)
+    filter_select_ch1 = SelectRegister(0x000,
+                                       bitmask=0x3 << 6,  # Bits 7:6
+                                       options={'500Hz': 0 << 6,
+                                                '2kHz': 1 << 6,
+                                                '5kHz': 2 << 6},
+                                       default='2kHz',
+                                       doc="Channel 1 lowpass filter selection (active when fir_bypass_ch1 is False). "
+                                           "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                           "2kHz: Bandwidth 2 kHz (CIC+FIR). "
+                                           "5kHz: Bandwidth 5 kHz (CIC+FIR).")
+
+    # Filter selection for channel 2 (bits 9:8 of address 0x000)
+    filter_select_ch2 = SelectRegister(0x000,
+                                       bitmask=0x3 << 8,  # Bits 9:8
+                                       options={'500Hz': 0 << 8,
+                                                '2kHz': 1 << 8,
+                                                '5kHz': 2 << 8},
+                                       default='2kHz',
+                                       doc="Channel 2 lowpass filter selection (active when fir_bypass_ch2 is False). "
+                                           "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                           "2kHz: Bandwidth 2 kHz (CIC+FIR). "
+                                           "5kHz: Bandwidth 5 kHz (CIC+FIR).")
 
     def _setup(self):
         """
