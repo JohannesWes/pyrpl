@@ -17,11 +17,54 @@ set output_base_dir $script_dir
 # FPGA part (Red Pitaya uses Zynq 7010)
 set part "xc7z010clg400-1"
 
-# Clean up any leftover .Xil directory
+# Helper procedure to safely delete .Xil directory with verification
+proc safe_delete_xil {xil_dir} {
+    if {![file exists $xil_dir]} {
+        return 1
+    }
+
+    puts "  Attempting to delete .Xil directory..."
+
+    # Try to delete
+    if {[catch {file delete -force $xil_dir} err]} {
+        puts "ERROR: Failed to delete .Xil directory: $err"
+        return 0
+    }
+
+    # Verify it's actually gone
+    if {[file exists $xil_dir]} {
+        puts "ERROR: .Xil directory still exists after deletion attempt!"
+        puts "       This usually means another process is using it or there are permission issues."
+        return 0
+    }
+
+    puts "  .Xil directory cleaned up successfully."
+    return 1
+}
+
+# Clean up any leftover .Xil directory with verification
 set xil_dir [file join $script_dir ".Xil"]
 if {[file exists $xil_dir]} {
-    puts "Cleaning up old .Xil directory..."
-    file delete -force $xil_dir
+    puts "============================================================"
+    puts "WARNING: Found existing .Xil directory from previous run"
+    puts "============================================================"
+
+    if {![safe_delete_xil $xil_dir]} {
+        puts ""
+        puts "============================================================"
+        puts "FATAL: Cannot proceed - .Xil directory cannot be removed!"
+        puts "============================================================"
+        puts ""
+        puts "Please do the following before re-running this script:"
+        puts "  1. Close any other Vivado instances"
+        puts "  2. Manually delete: $xil_dir"
+        puts "  3. Re-run this script"
+        puts ""
+        puts "On Windows PowerShell:"
+        puts "  Remove-Item -Recurse -Force \"$xil_dir\""
+        puts ""
+        exit 1
+    }
 }
 
 # Find all .coe files in the coefficients directory
@@ -120,8 +163,9 @@ foreach coe_file $coe_files {
     close_project
 
     # Clean up .Xil directory between runs to avoid conflicts
-    if {[file exists $xil_dir]} {
-        file delete -force $xil_dir
+    if {![safe_delete_xil $xil_dir]} {
+        puts "WARNING: Could not clean up .Xil directory after $ip_name"
+        puts "         Continuing anyway, but subsequent IPs may fail..."
     }
 }
 
@@ -168,9 +212,7 @@ foreach coe_file $coe_files {
 }
 
 # Final cleanup
-if {[file exists $xil_dir]} {
-    file delete -force $xil_dir
-}
+safe_delete_xil $xil_dir
 
 puts "\n============================================================"
 puts "FIR IP generation complete!"
