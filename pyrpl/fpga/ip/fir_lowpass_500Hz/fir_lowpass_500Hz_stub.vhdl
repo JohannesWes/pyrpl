@@ -2,7 +2,7 @@
 -- Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
 -- --------------------------------------------------------------------------------
 -- Tool Version: Vivado v.2024.2 (win64) Build 5239630 Fri Nov 08 22:35:27 MST 2024
--- Date        : Sun Dec  7 22:45:31 2025
+-- Date        : Wed Dec 17 18:25:17 2025
 -- Host        : aqut-johan-pc running 64-bit major release  (build 9200)
 -- Command     : write_vhdl -force -mode synth_stub
 --               c:/Users/aj92uwef/PycharmProjects/pyrpl_new/pyrpl/fpga/ip/fir_lowpass_500Hz/fir_lowpass_500Hz_stub.vhdl
