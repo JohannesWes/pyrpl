@@ -1,3 +1,11 @@
+# ==============================================================================
+# PyRPL .gitignore
+# ==============================================================================
+
+# ==============================================================================
+# Python
+# ==============================================================================
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -6,9 +14,6 @@ __pycache__/
 # C extensions
 *.so
 *.o
-
-# user data
-curves/
 
 # Distribution / packaging
 .Python
@@ -27,37 +32,9 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-# vivado windows stuff
-#pyrpl/fpga/.srcs
-pyrpl/fpga/.*
-#pyrpl/fpga/.Xil
-#pyrpl/fpga/out
-pyrpl/fpga/out/*.bin
-pyrpl/fpga/out/*.bit
-pyrpl/fpga/out/*.dcp
-pyrpl/fpga/out/*.xml
-pyrpl/fpga/sdk
-pyrpl/fpga/*.html
-pyrpl/fpga/*.xml
-pyrpl/fpga/red_pitaya.prm
-pyrpl/fpga/*.dmp
-pyrpl/.idea
-
-# Vivado project-related stuff
-pyrpl/fpga/project/.*
-pyrpl/fpga/project/
-*.jou
-
-#fpga-related
-fpga/out/
-fpga/sdk/
-fpga/ip/
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
-#*.spec
 
 # Installer logs
 pip-log.txt
@@ -81,50 +58,64 @@ unit_tests.xml
 *.mo
 *.pot
 
-# Django stuff:
+# PyBuilder
+target/
+
+# ==============================================================================
+# IDEs and Editors
+# ==============================================================================
+
+# PyCharm
+.idea/
+*.pydevproject
+*.project
+
+# Jupyter/IPython
+.ipynb_checkpoints
+
+# ==============================================================================
+# Logs
+# ==============================================================================
+
 *.log
 
+# ==============================================================================
 # Sphinx documentation
-#!doc/sphinx/build/html
-# Sphinx documentation
+# ==============================================================================
+
 _build
 _static
 _templates
 
+# ==============================================================================
+# PyRPL User Data
+# ==============================================================================
 
-# PyBuilder
-target/
+# User curves
+curves/
 
-#Ipython Notebook
-.ipynb_checkpoints
-
-
-#notebooks
-!docs/source/*
-!docs/source/developer_guide/dist
-
-*.pydevproject
-*.project
-
-#pycharm
-.idea/
-
-#config backups
+# Config backups
 pyrpl/config/*.bak
 *.bak
 
-#user config
+# User config
 pyrpl/config/user_config/*.yml
 pyrpl/config/user_config/*.bak
 pyrpl/config/user_config
 
-#test files made by Xueshi
+# ==============================================================================
+# PyRPL Test files
+# ==============================================================================
+
 test_import.py
-run.py 
+run.py
 rpiq_gui.py
 rpiq.ui
 
-# distribution stuff
+# ==============================================================================
+# PyRPL Distribution
+# ==============================================================================
+
 README.rst
 scripts/dist/
 scripts/build/
@@ -133,6 +124,87 @@ scripts/run_pyrpl.spec
 scripts/pyrpl.spec
 cover/index.html
 
-#notebook checkpoints
-.ipynb_checkpoints
+# Notebooks
 run_pyrpl_in_notebook.ipynb
+!docs/source/*
+!docs/source/developer_guide/dist
+
+# ==============================================================================
+# Vivado / FPGA Build System
+# ==============================================================================
+
+# Vivado journal and log files (anywhere in repo)
+*.jou
+
+# Vivado hidden directories
+pyrpl/fpga/.*
+
+# Vivado project directories
+pyrpl/fpga/project/
+pyrpl/fpga/sdk
+
+# Vivado generated files in main fpga directory
+pyrpl/fpga/*.html
+pyrpl/fpga/*.xml
+pyrpl/fpga/*.dmp
+pyrpl/fpga/red_pitaya.prm
+
+# FPGA build output (keep reports, ignore large binaries)
+pyrpl/fpga/out/*.bin
+pyrpl/fpga/out/*.bit
+pyrpl/fpga/out/*.dcp
+pyrpl/fpga/out/*.xml
+
+# Legacy fpga directory (without pyrpl/ prefix)
+fpga/out/
+fpga/sdk/
+fpga/ip/
+
+# ==============================================================================
+# Xilinx IP Cores - Generated Files to Ignore
+# ==============================================================================
+# Only essential files are tracked:
+#   - *.xci          (IP configuration - required)
+#   - *.dcp          (pre-synthesized checkpoint - speeds up builds)
+#   - constraints/   (timing constraints - required for FIR)
+#   - *_ooc.xdc      (out-of-context constraints - required for CIC)
+#   - hdl/           (behavioral HDL - fallback if no .dcp)
+#   - synth/         (synthesis wrapper - fallback if no .dcp)
+#
+# Everything else is regenerated from .xci and can be ignored.
+# ==============================================================================
+
+# IP metadata and journals
+pyrpl/fpga/ip/*/*.xml
+pyrpl/fpga/ip/*/*.bmj
+
+# Memory initialization files
+pyrpl/fpga/ip/*/*.mif
+
+# Instantiation templates (reference only, not used in build)
+pyrpl/fpga/ip/*/*.veo
+pyrpl/fpga/ip/*/*.vho
+
+# Stub files (for black-box simulation, not used in build)
+pyrpl/fpga/ip/*/*_stub.v
+pyrpl/fpga/ip/*/*_stub.vhdl
+pyrpl/fpga/ip/*/*_bmstub.v
+
+# Simulation netlists (for simulation only, not used in synthesis)
+pyrpl/fpga/ip/*/*_sim_netlist.v
+pyrpl/fpga/ip/*/*_sim_netlist.vhdl
+
+# Out-of-context constraints for FIR (not used - FIR uses constraints/ folder)
+pyrpl/fpga/ip/fir_lowpass_*/*_ooc.xdc
+
+# Directories with generated content not needed for build
+pyrpl/fpga/ip/*/cmodel/
+pyrpl/fpga/ip/*/demo_tb/
+pyrpl/fpga/ip/*/doc/
+pyrpl/fpga/ip/*/sim/
+
+# Vivado temporary files in IP directory
+pyrpl/fpga/ip/vivado*.jou
+pyrpl/fpga/ip/vivado*.log
+pyrpl/fpga/ip/vivado*.backup.jou
+pyrpl/fpga/ip/vivado*.backup.log
