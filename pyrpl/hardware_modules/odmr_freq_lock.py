@@ -235,14 +235,25 @@ class OdmrFreqLock(HardwareModule):
                              doc="Last error value that produced an integrator update (LSB).")
 
     #--------------------------------------------------------------------------
-    # FTW CORRECTION REGISTER (0x0018) - Read-only
+    # FTW INTEGRATOR STATE REGISTER (0x0018) - Read-only
     #--------------------------------------------------------------------------
 
-    ftw_corr = FloatRegister(0x0018,
+    ftw_int = FloatRegister(0x0018,
                             bits=32,
                             norm=1,  # No scaling, just signed interpretation
                             signed=True,
-                            doc="Current FTW correction value (signed, DDS units).")
+                            doc="Integrator state in FTW units (for diagnostics). "
+                                "In PI mode, the actual output includes additional P term.")
+
+    #--------------------------------------------------------------------------
+    # FTW OUTPUT REGISTER (0x0020) - Read-only
+    #--------------------------------------------------------------------------
+
+    ftw_out = FloatRegister(0x0020,
+                            bits=32,
+                            norm=1,  # No scaling, just signed interpretation
+                            signed=True,
+                            doc="Actual FTW correction output to DDS (includes P term in PI mode).")
 
     #--------------------------------------------------------------------------
     # PROPERTIES - User-friendly interfaces to registers
@@ -357,13 +368,33 @@ class OdmrFreqLock(HardwareModule):
 
     @property
     def correction_hz(self):
-        """Current frequency correction in Hz."""
-        return self.ftw_corr / FTW_PER_HZ
+        """
+        Actual frequency correction in Hz (sent to DDS).
+
+        This is the value you want for tracking magnetic field drift.
+        In PI mode, includes both integrator and proportional contributions.
+        """
+        return self.ftw_out / FTW_PER_HZ
 
     @property
     def correction_ftw(self):
-        """Current frequency correction in FTW units (raw DDS value)."""
-        return int(round(self.ftw_corr))
+        """Actual frequency correction in FTW units (raw DDS value)."""
+        return int(round(self.ftw_out))
+
+    @property
+    def integrator_hz(self):
+        """
+        Integrator state in Hz (for diagnostics).
+
+        In PI mode, the actual correction includes an additional proportional
+        term. Use correction_hz for the actual applied correction.
+        """
+        return self.ftw_int / FTW_PER_HZ
+
+    @property
+    def integrator_ftw(self):
+        """Integrator state in FTW units (for diagnostics)."""
+        return int(round(self.ftw_int))
 
     #--------------------------------------------------------------------------
     # METHODS
@@ -499,6 +530,7 @@ class OdmrFreqLock(HardwareModule):
             'kp_q': self.kp_q,
             'deadband_lsb': self.deadband_lsb,
             'max_correction_hz': self.max_correction_hz,
+            'integrator_hz': self.integrator_hz,  # For diagnostics
         }
 
     def check_polarity(self, step_hz=200, duration_s=0.1):

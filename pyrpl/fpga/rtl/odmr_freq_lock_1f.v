@@ -45,8 +45,9 @@
  * 0x000C  FTW_LIM     [RW]  Saturation limit for FTW correction (unsigned)
  * 0x0010  STATUS      [R ]  Status flags (locked, saturated, saturated_i, saturated_pi)
  * 0x0014  ERR_LATCH   [R ]  Last error value that produced update
- * 0x0018  FTW_CORR    [R ]  Current FTW correction value (signed)
+ * 0x0018  FTW_INT     [R ]  Integrator state (for diagnostics)
  * 0x001C  KP_Q        [RW]  Proportional gain K_p,FTW in Q8.24 format
+ * 0x0020  FTW_OUT     [R ]  Actual FTW correction output to DDS (includes P term in PI mode)
  */
 
 module odmr_freq_lock_1f #(
@@ -85,8 +86,9 @@ localparam ADDR_DEADBAND  = 20'h00008;  // Deadband threshold
 localparam ADDR_FTW_LIM   = 20'h0000C;  // FTW saturation limit
 localparam ADDR_STATUS    = 20'h00010;  // Status flags
 localparam ADDR_ERR_LATCH = 20'h00014;  // Latched error
-localparam ADDR_FTW_CORR  = 20'h00018;  // Current FTW correction
+localparam ADDR_FTW_INT   = 20'h00018;  // Integrator state (for diagnostics)
 localparam ADDR_KP_Q      = 20'h0001C;  // Proportional gain (Q8.24)
+localparam ADDR_FTW_OUT   = 20'h00020;  // Actual FTW correction output to DDS
 
 //-----------------------------------------------------------------------------
 // DEFAULT VALUES (Pre-computed from planning doc)
@@ -216,7 +218,8 @@ always @(posedge clk_i) begin
         end
 
         ADDR_ERR_LATCH: sys_rdata <= err_latch;
-        ADDR_FTW_CORR:  sys_rdata <= {{(32-PHASEBITS){ftw_corr[PHASEBITS-1]}}, ftw_corr};
+        ADDR_FTW_INT:   sys_rdata <= {{(32-PHASEBITS){ftw_corr[PHASEBITS-1]}}, ftw_corr};
+        ADDR_FTW_OUT:   sys_rdata <= {{(32-PHASEBITS){ftw_correction_o[PHASEBITS-1]}}, ftw_correction_o};
 
         default: begin
           sys_rdata <= 32'h0;

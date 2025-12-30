@@ -13,8 +13,9 @@
 3. [Implementation Architecture](#implementation-architecture)
 4. [Register Map & Interface Specification](#register-map--interface-specification)
 5. [Tuning & Commissioning](#tuning--commissioning)
-6. [Troubleshooting & Debug](#troubleshooting--debug)
-7. [Future Enhancements](#future-enhancements)
+6. [Noise Analysis & Signal Quality](#noise-analysis--signal-quality)
+7. [Troubleshooting & Debug](#troubleshooting--debug)
+8. [Future Enhancements](#future-enhancements)
 
 ---
 
@@ -969,6 +970,270 @@ def measure_slope(odm, fgen, f_nominal, step_hz=100, n_steps=5):
 K_measured = measure_slope(odm, p.rp.fgen3, f_nominal=20e6)
 odm.set_bandwidth(300, slope_lsb_per_hz=K_measured)
 ```
+
+---
+
+## Noise Analysis & Signal Quality
+
+This section analyzes how noise propagates through the frequency tracking system and provides guidance on preserving signal quality for accurate magnetic field measurements.
+
+### Signal Chain Bit-Width Preservation
+
+The lock-in demodulation chain provides significant effective number of bits (ENOB) enhancement through decimation and filtering:
+
+```
+ADC Input:           14 bits @ 125 MHz
+    ↓
+Mixer (ADC × sin):   14 × 14 = 28 bits
+    ↓
+CIC Decimator:       40 bits output (R=4096 → ~12 bits ENOB gain theoretical)
+    ↓
+FIR Filter:          32 bits output
+    ↓
+err_i to tracker:    32 bits signed @ ~30.5 kHz
+```
+
+**Does the frequency tracker preserve this precision?**
+
+The critical arithmetic path in the FPGA is:
+
+```
+err_i (32-bit) × μ_Q (32-bit Q8.24) = 64-bit product
+    ↓
+Round and shift by 24 bits → delta_ftw (32-bit)
+    ↓
+Accumulate in ftw_corr (32-bit integrator)
+```
+
+With proper rounding (adding 2²³ before the right-shift), the arithmetic is **effectively lossless** for typical gain values. For a 1-LSB error input with the default gain (μ_FTW ≈ 1.93):
+
+```
+1 LSB × 0x01EDE8D0 ≈ 1.93 FTW after scaling
+```
+
+This corresponds to a frequency resolution of:
+
+$$
+\Delta f_{min} = \frac{1 \text{ FTW} \times 125 \text{ MHz}}{2^{32}} \approx 0.029 \text{ Hz}
+$$
+
+**Conclusion:** The arithmetic precision is excellent—sub-Hz resolution from LSB-level error signals. No significant quantization noise is added by the tracking algorithm.
+
+---
+
+### Open-Loop vs. Closed-Loop: Noise Characteristics
+
+When streaming data for magnetic field tracking, you have two options (see [Signal Processing Chain](#signal-processing-chain)):
+
+| Mode | Stream Source | Loop State | What You Measure |
+|------|---------------|------------|------------------|
+| **Open-loop** | `'demod'` | `enable=False` | Raw error signal e[n] |
+| **Closed-loop** | `'ftw_corr'` | `enable=True` | Frequency correction |
+
+These modes have **fundamentally different noise characteristics**.
+
+#### Open-Loop Mode
+
+In open-loop mode, you stream the demodulated error signal directly:
+
+$$
+e[n] = K \cdot (f_0 - f_r[n]) + n_{demod}[n]
+$$
+
+where `n_demod[n]` is the demodulation noise (shot noise, laser intensity noise, electronic noise filtered by CIC+FIR).
+
+**Noise characteristics:**
+- Noise is **stationary** (constant statistical properties over time)
+- Each sample is independent (after FIR settling)
+- Frequency uncertainty per sample: `σ_f = σ_e / K`
+
+**Example:** With `σ_e ≈ 50 LSB` and `K = 1.1 LSB/Hz`:
+```
+σ_f = 50 / 1.1 ≈ 45 Hz per sample
+```
+
+Averaging N samples improves this by √N.
+
+#### Closed-Loop Mode
+
+In closed-loop mode, the integrator accumulates corrections to drive `e[n] → 0`:
+
+$$
+\text{ftw\_corr}[n] = \sum_{k=0}^{n-1} \left( -\mu_{FTW} \cdot e[k] \right)
+$$
+
+The tracked frequency is:
+
+$$
+f_{tracked}[n] = f_0 + \frac{\text{ftw\_corr}[n]}{\text{FTW\_PER\_HZ}}
+$$
+
+**Noise characteristics:**
+- The integrator is a **low-pass filter** for the error signal
+- Demodulation noise undergoes **integration**, producing a **random walk**
+- Noise variance grows linearly with time: `σ²(t) ∝ t`
+
+---
+
+### Integrator Random Walk: The Key Trade-off
+
+The integrator's random walk is a critical consideration for long-term tracking accuracy.
+
+#### Mathematical Model
+
+For white noise input with RMS amplitude `σ_e`, the integrator output variance after time `t` is:
+
+$$
+\sigma^2_{ftw}(t) = (\mu_{FTW} \cdot \sigma_e)^2 \cdot f_s \cdot t
+$$
+
+Converting to frequency units:
+
+$$
+\sigma_f(t) = \frac{\mu_{FTW} \cdot \sigma_e \cdot \sqrt{f_s \cdot t}}{\text{FTW\_PER\_HZ}}
+$$
+
+#### Numerical Example
+
+With typical parameters:
+- `σ_e = 50 LSB` (error noise RMS)
+- `μ_FTW = 1.93 FTW/LSB` (default gain for 300 Hz bandwidth)
+- `f_s = 30,517 Hz` (sample rate)
+- `FTW_PER_HZ = 34.36`
+
+$$
+\sigma_f(t) \approx 2.8 \cdot \sqrt{t} \text{ Hz}
+$$
+
+| Integration Time | Random Walk σ_f |
+|------------------|-----------------|
+| 1 second | 2.8 Hz |
+| 10 seconds | 8.9 Hz |
+| 100 seconds | 28 Hz |
+| 1 hour | 170 Hz |
+
+**This random walk adds uncertainty to your tracked magnetic field measurement over long timescales.**
+
+---
+
+### The Deadband Solution
+
+The **deadband feature** is the primary mechanism to prevent integrator random walk while maintaining tracking capability.
+
+#### How Deadband Works
+
+When `deadband_enable = True`, the integrator update is **skipped** if the error magnitude is below the threshold:
+
+```
+if |e[n]| < deadband_threshold:
+    ftw_corr[n+1] = ftw_corr[n]    # Hold integrator (no update)
+else:
+    ftw_corr[n+1] = ftw_corr[n] - μ × e[n]   # Normal update
+```
+
+#### Effect on Noise
+
+| Condition | Integrator Behavior | Random Walk |
+|-----------|---------------------|-------------|
+| `|e[n]| ≥ deadband` | Updates normally | Accumulates |
+| `|e[n]| < deadband` | Frozen (held) | **Stopped** |
+
+When the loop is **locked** (error within deadband), the integrator is frozen and random walk ceases. The correction value represents the **last known good estimate** of the frequency offset.
+
+#### Optimal Deadband Selection
+
+The deadband threshold should be set just above the noise floor to:
+1. **Stop random walk** when locked (noise samples don't trigger updates)
+2. **Allow tracking** when the resonance actually moves (real signal exceeds deadband)
+
+**Rule of thumb:** Set deadband to 2-3× the RMS noise level:
+
+```python
+# Measure noise floor
+odm.enable = True
+odm.deadband_enable = False
+time.sleep(1.0)  # Let loop settle
+
+errors = [odm.error_lsb for _ in range(200)]
+noise_rms = np.std(errors)
+
+# Set deadband
+odm.deadband_lsb = int(2.5 * noise_rms)
+odm.deadband_enable = True
+
+print(f"Noise RMS: {noise_rms:.1f} LSB")
+print(f"Deadband set to: {odm.deadband_lsb} LSB")
+```
+
+See [Step 4: Deadband Tuning](#step-4-deadband-tuning-optional) for detailed commissioning procedure.
+
+#### Trade-off: Deadband vs. Tracking Resolution
+
+Setting the deadband too high reduces tracking resolution:
+
+$$
+\text{Minimum detectable frequency change} = \frac{\text{deadband\_lsb}}{K}
+$$
+
+**Example:** With `deadband = 100 LSB` and `K = 1.1 LSB/Hz`:
+```
+Minimum detectable Δf = 100 / 1.1 ≈ 91 Hz
+```
+
+For NV-center magnetometry with gyromagnetic ratio γ ≈ 28 GHz/T:
+```
+Minimum detectable ΔB = 91 Hz / 28 GHz/T ≈ 3.25 nT
+```
+
+Choose the deadband based on your required field resolution vs. acceptable random walk.
+
+---
+
+### Practical Recommendations
+
+#### For Short-Term Measurements (< 10 seconds)
+
+Random walk is small; either mode works well:
+- **Open-loop** (`'demod'`): Direct measurement, simple post-processing
+- **Closed-loop** (`'ftw_corr'`): Active tracking, immune to slow drifts
+
+#### For Long-Term Measurements (minutes to hours)
+
+Random walk accumulates significantly. Recommended approaches:
+
+1. **Use deadband** (simplest):
+   ```python
+   odm.deadband_enable = True
+   odm.deadband_lsb = int(2.5 * noise_rms)
+   ```
+   Integrator freezes when locked, stopping random walk.
+
+2. **Open-loop streaming** with stable f₀:
+   ```python
+   odm.enable = False
+   scan.stream_start(input_source='demod')
+   # Post-process: freq_error = error_data / K
+   ```
+   No integrator, no random walk. Requires f₀ to remain near resonance.
+
+3. **Periodic integrator reset** (advanced):
+   ```python
+   for epoch in range(num_epochs):
+       data = collect_data(duration=10.0)
+       save_epoch(data)
+       odm.clear()  # Reset integrator
+       time.sleep(0.1)  # Re-acquisition transient
+   ```
+   Limits random walk to each epoch duration.
+
+#### Summary Table
+
+| Scenario | Recommended Mode | Deadband | Notes |
+|----------|------------------|----------|-------|
+| Fast dynamics (> 1 Hz) | Closed-loop | Off | Need full bandwidth |
+| Slow drift (< 0.1 Hz) | Closed-loop | On | Deadband stops random walk |
+| Characterization | Open-loop | N/A | Direct discriminator measurement |
+| Long recording | Closed-loop | On | Or use periodic reset |
 
 ---
 
