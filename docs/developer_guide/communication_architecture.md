@@ -50,10 +50,14 @@ Address: FPGA register address (e.g., 0x40300004)
 
 ### Python Client Implementation
 
-**File:** `redpitaya_client.py:107-123`
+**File:** `redpitaya_client.py:131-147`
+
+The `MonitorClient` class is **thread-safe** - all socket operations are protected by a reentrant lock (`threading.RLock`), allowing safe concurrent access from multiple threads (e.g., Qt QThreads in qudi, Python threading, or asyncio).
 
 ```python
 def _reads(self, addr, length):
+    if length > 65535:
+        length = 65535
     # Construct 8-byte header
     header = b'r' + bytes(bytearray([
         0,                              # Reserved byte
@@ -68,11 +72,17 @@ def _reads(self, addr, length):
     # Send header
     self.socket.send(header)
 
-    # Receive header echo + data
+    # Receive header echo + data (with retry loop for partial receives)
     data = self.socket.recv(length * 4 + 8)
+    while (len(data) < length * 4 + 8):
+        data += self.socket.recv(length * 4 - len(data) + 8)
 
     # Verify echo and return data as numpy array
-    return np.frombuffer(data[8:], dtype=np.uint32)
+    if data[:8] == header:
+        return np.frombuffer(data[8:], dtype=np.uint32)
+    else:
+        # Error handling for out-of-sync transmission
+        return None
 ```
 
 ### C Server Implementation
@@ -155,18 +165,35 @@ Physical Memory Map (Red Pitaya / Zynq-7010/7020):
 └──────────────────┴──────────────────────────────┘
 ```
 
-**PyRPL Module Address Allocation** (`red_pitaya_dsp.v:45-46`):
+**PyRPL Module Address Allocation** (`red_pitaya_dsp.v:45-51`):
 
 ```
-Module i occupies: 0x40300000 + i * 0x10000 to 0x4030FFFF (64KB each)
+DSP modules (i=0-7) occupy: 0x40300000 + i * 0x10000 (64KB each)
+Other modules have dedicated address regions.
 
-Examples:
-- PID0 (i=0):  0x40300000 - 0x4030FFFF
-- PID1 (i=1):  0x40310000 - 0x4031FFFF
-- IIR  (i=4):  0x40340000 - 0x4034FFFF
-- IQ0  (i=5):  0x40350000 - 0x4035FFFF
-- Scope:       0x40100000 - 0x4010FFFF
-- ASG:         0x40200000 - 0x4020FFFF
+Current Module Map:
+┌────────────────┬───────────────┬──────────────────────────────────┐
+│ Module         │ Address       │ Notes                            │
+├────────────────┼───────────────┼──────────────────────────────────┤
+│ HK             │ 0x40000000    │ Housekeeping                     │
+│ Scope          │ 0x40100000    │ Oscilloscope                     │
+│ ASG (asg0/1)   │ 0x40200000    │ Arbitrary Signal Generator       │
+│ Sampler/PID0   │ 0x40300000    │ DSP region 0                     │
+│ AMS            │ 0x40400000    │ Analog Mixed Signals             │
+│ Scan           │ 0x40500000    │ Scan/Sweep module                │
+│ Fgen3          │ 0x40600000    │ 3-frequency generator            │
+│ LockIn         │ 0x40700000    │ Lock-in amplifier                │
+│ OdmrFreqLock   │ 0x40800000    │ ODMR frequency tracking          │
+└────────────────┴───────────────┴──────────────────────────────────┘
+
+DSP Signal Routing Numbers (from dsp.py DSP_INPUTS):
+- pid0: 0, pid1: 1, pid2: 2, trig: 3, iir: 4
+- iq0: 5, (iq1: 6 - REMOVED), iq2: 7
+- asg0/scope0: 8, asg1/scope1: 9
+- in1: 10, in2: 11, out1: 12, out2: 13
+- iq2_2: 14 (second output of iq2), off: 15
+
+Note: IQ1 (module 6) was removed to save FPGA resources.
 ```
 
 ---
@@ -239,8 +266,12 @@ The DSP module examines `sys_addr[19:16]` to determine which module (0-15) the t
 
 Let's trace a complete write operation from Python to FPGA:
 
+> **Note:** PID modules are currently commented out in `red_pitaya_dsp.v` to save
+> FPGA resources. This example illustrates the general data flow that applies to
+> all hardware modules (Scope, IQ, Scan, etc.).
+
 ```python
-# Python code
+# Python code (conceptual example)
 pyrpl.pid0.setpoint = 1000  # Set PID setpoint register
 ```
 
@@ -253,14 +284,19 @@ addr = 0x40300000 + 0x08  # PID0 base + setpoint offset
 value_uint32 = int(1000 * 2**14)  # Convert to Q14 fixed-point
 ```
 
-**2. Python Client** (`redpitaya_client.py:125-143`)
+**2. Python Client** (`redpitaya_client.py:149-167`)
 ```python
 def _writes(self, addr, values):
+    values = values[:65535 - 2]
+    length = len(values)
     header = b'w' + bytes(bytearray([
-        0, 1, 0,  # Length = 1 word
-        0x08, 0x00, 0x30, 0x40  # Address 0x40300008
+        0,
+        length & 0xFF, (length >> 8) & 0xFF,  # Length = 1 word
+        addr & 0xFF, (addr >> 8) & 0xFF,      # Address 0x40300008
+        (addr >> 16) & 0xFF, (addr >> 24) & 0xFF
     ]))
-    self.socket.send(header + np.array([value_uint32]).tobytes())
+    # send header+body
+    self.socket.send(header + np.array(values, dtype=np.uint32).tobytes())
 ```
 
 **3. TCP/IP Stack**
@@ -379,6 +415,7 @@ The Scan module could in the future write directly to DDR memory via these ports
 4. **Real-time FPGA** - 125 MHz DSP independent of network latency
 5. **Flexible** - Can add modules by changing FPGA bitfile
 6. **Low resource** - Minimal CPU/memory overhead
+7. **Thread-safe** - MonitorClient uses RLock for safe multi-threaded access
 
 **Disadvantages:**
 1. **Latency** - Network + syscalls add ~50 µs overhead per register access
@@ -391,8 +428,9 @@ The Scan module could in the future write directly to DDR memory via these ports
 ## References in Codebase
 
 **Python Side:**
-- `pyrpl/redpitaya_client.py:37-178` - MonitorClient implementation
-- `pyrpl/redpitaya.py:465-473` - Client initialization
+- `pyrpl/redpitaya_client.py:38-202` - MonitorClient implementation (thread-safe)
+- `pyrpl/redpitaya.py:465-469` - Client initialization
+- `pyrpl/hardware_modules/dsp.py:1-200` - DSP signal routing and module definitions
 - `pyrpl/attributes.py` - Register descriptors that generate addresses
 
 **C Server:**
@@ -400,7 +438,7 @@ The Scan module could in the future write directly to DDR memory via these ports
 
 **FPGA Side:**
 - `pyrpl/fpga/rtl/axi_slave.v` - AXI to RP bus converter
-- `pyrpl/fpga/rtl/red_pitaya_ps.v` - PS wrapper with AXI slave
+- `pyrpl/fpga/rtl/red_pitaya_ps.v:273-331` - PS wrapper with AXI slave instantiation
 - `pyrpl/fpga/rtl/red_pitaya_top.v` - Top level connections
 - `pyrpl/fpga/rtl/red_pitaya_dsp.v` - Module address decoding and signal routing
 
@@ -415,3 +453,5 @@ The Scan module could in the future write directly to DDR memory via these ports
 ## Conclusion
 
 This architecture is an elegant example of **layered abstraction** - each layer handles one concern (network transport, memory mapping, address decoding) to enable high-level Python code to control low-level FPGA hardware with minimal latency. The key insight is leveraging **memory-mapped I/O** via `/dev/mem` to make FPGA registers appear as normal memory to the Linux system, accessible via standard `mmap()` calls.
+
+Recent enhancements include **thread-safe** socket operations in `MonitorClient` (using `RLock`), enabling safe concurrent access from multiple threads in applications like qudi or async Python code.
