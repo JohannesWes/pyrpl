@@ -153,23 +153,23 @@ class OdmrFreqLock(HardwareModule):
     #--------------------------------------------------------------------------
 
     enable = BoolRegister(0x0000,
-                         bitmask=0x1,
+                         bit=0,
                          doc="Enable frequency lock loop. When disabled, correction forced to zero.")
 
     invert = BoolRegister(0x0000,
-                         bitmask=0x2,
-                         doc="Invert error sign. Set this if loop tracks in wrong direction.")
+                         bit=1,
+                         doc="Invert error sign. Set True for LSB mixing (f_RF = f_LO - f_IF).")
 
     hold = BoolRegister(0x0000,
-                       bitmask=0x4,
+                       bit=2,
                        doc="Freeze integrator. Updates are skipped but correction holds current value.")
 
     _clear_bit = BoolRegister(0x0000,
-                             bitmask=0x8,
+                             bit=3,
                              doc="Clear integrator to zero (self-clearing, write-only).")
 
     deadband_enable = BoolRegister(0x0000,
-                                  bitmask=0x10,
+                                  bit=4,
                                   doc="Enable deadband. Updates skipped when |error| < deadband threshold.")
 
     prop_enable = BoolRegister(0x0000,
