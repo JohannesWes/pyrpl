@@ -218,8 +218,8 @@ always @(posedge clk_i) begin
         end
 
         ADDR_ERR_LATCH: sys_rdata <= err_latch;
-        ADDR_FTW_INT:   sys_rdata <= {{(32-PHASEBITS){ftw_corr[PHASEBITS-1]}}, ftw_corr};
-        ADDR_FTW_OUT:   sys_rdata <= {{(32-PHASEBITS){ftw_correction_o[PHASEBITS-1]}}, ftw_correction_o};
+        ADDR_FTW_INT:   sys_rdata <= ftw_corr;
+        ADDR_FTW_OUT:   sys_rdata <= ftw_correction_o;
 
         default: begin
           sys_rdata <= 32'h0;
