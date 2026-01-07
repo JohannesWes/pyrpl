@@ -131,16 +131,6 @@ wire signed [31:0]  fir_500Hz_output2;
 wire                fir_500Hz_valid1;
 wire                fir_500Hz_valid2;
 
-wire signed [31:0]  fir_1kHz_output1;
-wire signed [31:0]  fir_1kHz_output2;
-wire                fir_1kHz_valid1;
-wire                fir_1kHz_valid2;
-
-wire signed [31:0]  fir_linear_phase_1kHz_output1;
-wire signed [31:0]  fir_linear_phase_1kHz_output2;
-wire                fir_linear_phase_1kHz_valid1;
-wire                fir_linear_phase_1kHz_valid2;
-
 wire signed [31:0]  fir_2kHz_output1;
 wire signed [31:0]  fir_2kHz_output2;
 wire                fir_2kHz_valid1;
@@ -150,11 +140,6 @@ wire signed [31:0]  fir_5kHz_output1;
 wire signed [31:0]  fir_5kHz_output2;
 wire                fir_5kHz_valid1;
 wire                fir_5kHz_valid2;
-
-wire signed [31:0]  iir_1kHz_output1;
-wire signed [31:0]  iir_1kHz_output2;
-wire                iir_1kHz_valid1;
-wire                iir_1kHz_valid2;
 
 // FIR lowpass 500Hz instance - Channel 1
 fir_lowpass_500Hz fir_lowpass_500Hz_inst_ch1 (
@@ -174,46 +159,6 @@ fir_lowpass_500Hz fir_lowpass_500Hz_inst_ch2 (
   .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
   .m_axis_data_tvalid(fir_500Hz_valid2),         // output wire m_axis_data_tvalid
   .m_axis_data_tdata(fir_500Hz_output2)          // output wire [31 : 0] m_axis_data_tdata
-);
-
-// FIR lowpass 1000Hz instance - Channel 1
-fir_lowpass_1000Hz fir_lowpass_1000Hz_inst_ch1 (
-  .aclk(clk_i),                                  // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid1),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                         // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output1),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_1kHz_valid1),          // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_1kHz_output1)           // output wire [31 : 0] m_axis_data_tdata
-);
-
-// FIR lowpass 1000Hz instance - Channel 2
-fir_lowpass_1000Hz fir_lowpass_1000Hz_inst_ch2 (
-  .aclk(clk_i),                                  // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid2),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                         // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_1kHz_valid2),          // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_1kHz_output2)           // output wire [31 : 0] m_axis_data_tdata
-);
-
-// FIR linear phase lowpass 1000Hz instance - Channel 1
-fir_linear_phase_filter_1000Hz fir_linear_phase_filter_1000Hz_inst_ch1 (
-  .aclk(clk_i),                                          // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid1),          // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                                 // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output1),                 // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_linear_phase_1kHz_valid1),     // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_linear_phase_1kHz_output1)      // output wire [31 : 0] m_axis_data_tdata
-);
-   
-// FIR linear phase lowpass 1000Hz instance - Channel 2
-fir_linear_phase_filter_1000Hz fir_linear_phase_filter_1000Hz_inst_ch2 (
-  .aclk(clk_i),                                          // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid2),          // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                                 // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output2),                 // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_linear_phase_1kHz_valid2),     // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_linear_phase_1kHz_output2)      // output wire [31 : 0] m_axis_data_tdata
 );
 
 // FIR lowpass 2000Hz instance - Channel 1
@@ -256,26 +201,6 @@ fir_lowpass_5000Hz fir_lowpass_5000Hz_inst_ch2 (
   .m_axis_data_tdata(fir_5kHz_output2)           // output wire [31 : 0] m_axis_data_tdata
 );
 
-// IIR lowpass 1000Hz instance - Channel 1
-iir_filter_8th_order iir_filter_8th_order_inst_ch1 (
-  .clk(clk_i),                                   // input wire aclk
-  .rst_n(rstn_i),                                // input wire s_axis_data_tvalid
-  .ce(dec_m_axis_data_tvalid1),                  // output wire s_axis_data_tready
-  .data_in(decimator_output1),                   // input wire [39 : 0] s_axis_data_tdata
-  .valid_out(iir_1kHz_valid1),                   // output wire m_axis_data_tvalid
-  .data_out(iir_1kHz_output1)                    // output wire [31 : 0] m_axis_data_tdata
-);
-
-// IIR lowpass 1000Hz instance - Channel 2
-iir_filter_8th_order iir_filter_8th_order_inst_ch2 (
-  .clk(clk_i),                                  // input wire aclk
-  .rst_n(rstn_i),                               // input wire s_axis_data_tvalid
-  .ce(dec_m_axis_data_tvalid2),                                        // output wire s_axis_data_tready
-  .data_in(decimator_output2),                  // input wire [39 : 0] s_axis_data_tdata
-  .valid_out(iir_1kHz_valid2),                                 // output wire m_axis_data_tvalid
-  .data_out(iir_1kHz_output2)                    // output wire [31 : 0] m_axis_data_tdata
-);
-
 // Select between FIR outputs based on filter_select
 reg signed [31:0] fir_mux_out1;
 reg               fir_mux_valid1;
@@ -295,14 +220,6 @@ always @(*) begin
         2'd2: begin // 5kHz
             fir_mux_out1 = fir_5kHz_output1;
             fir_mux_valid1  = fir_5kHz_valid1;
-        end
-        2'd3: begin // 1kHz
-            //fir_mux_out1 = fir_1kHz_output1;
-            //fir_mux_valid1  = fir_1kHz_valid1;
-            //fir_mux_out1 = fir_linear_phase_1kHz_output1;
-            //fir_mux_valid1  = fir_linear_phase_1kHz_valid1;
-            fir_mux_out1 = iir_1kHz_output1;
-            fir_mux_valid1  = iir_1kHz_valid1;
         end
         default: begin // Default to 500Hz
             fir_mux_out1 = fir_500Hz_output1;
@@ -324,14 +241,6 @@ always @(*) begin
         2'd2: begin // 5kHz
             fir_mux_out2 = fir_5kHz_output2;
             fir_mux_valid2  = fir_5kHz_valid2;
-        end
-        2'd3: begin // 1kHz
-            //fir_mux_out2 = fir_1kHz_output2;
-            //fir_mux_valid2  = fir_1kHz_valid2;
-            //fir_mux_out2 = fir_linear_phase_1kHz_output2;
-            //fir_mux_valid2  = fir_linear_phase_1kHz_valid2;
-            fir_mux_out2 = iir_1kHz_output2;
-            fir_mux_valid2  = iir_1kHz_valid2;
         end
         default: begin // Default to 500Hz
             fir_mux_out2 = fir_500Hz_output2;
