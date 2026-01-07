@@ -77,6 +77,7 @@ add_files                      $path_rtl/red_pitaya_trigger_block.v
 add_files                      $path_rtl/red_pitaya_prng.v
 add_files                      $path_rtl/red_pitaya_quarter_wave_lut.v
 add_files                      $path_rtl/red_pitaya_3fgen.v
+add_files                      $path_rtl/iir_filter_8th_order.v
 add_files                      $path_rtl/scan_new.v
 
 
