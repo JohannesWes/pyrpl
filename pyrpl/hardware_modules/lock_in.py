@@ -84,24 +84,28 @@ class LockIn(HardwareModule):
                                        bitmask=0x3 << 6,  # Bits 7:6
                                        options={'500Hz': 0 << 6,
                                                 '2kHz': 1 << 6,
-                                                '5kHz': 2 << 6},
+                                                '5kHz': 2 << 6,
+                                                '1kHz': 3 << 6},
                                        default='2kHz',
                                        doc="Channel 1 lowpass filter selection (active when fir_bypass_ch1 is False). "
                                            "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
                                            "2kHz: Bandwidth 2 kHz (CIC+FIR). "
-                                           "5kHz: Bandwidth 5 kHz (CIC+FIR).")
+                                           "5kHz: Bandwidth 5 kHz (CIC+FIR). "
+                                           "1kHz: Bandwidth 1 kHz (CIC+FIR).")
 
     # Filter selection for channel 2 (bits 9:8 of address 0x000)
     filter_select_ch2 = SelectRegister(0x000,
                                        bitmask=0x3 << 8,  # Bits 9:8
                                        options={'500Hz': 0 << 8,
                                                 '2kHz': 1 << 8,
-                                                '5kHz': 2 << 8},
+                                                '5kHz': 2 << 8,
+                                                '1kHz': 3 << 8},
                                        default='2kHz',
                                        doc="Channel 2 lowpass filter selection (active when fir_bypass_ch2 is False). "
                                            "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
                                            "2kHz: Bandwidth 2 kHz (CIC+FIR). "
-                                           "5kHz: Bandwidth 5 kHz (CIC+FIR).")
+                                           "5kHz: Bandwidth 5 kHz (CIC+FIR). "
+                                           "1kHz: Bandwidth 1 kHz (CIC+FIR).")
 
     def _setup(self):
         """
