@@ -717,7 +717,7 @@ scan #(
     .rstn          (adc_rstn),
 
     // Data Inputs - ADC, IQ, demod, and FTW correction
-    .adc_input_i   (iir_output), # todo: not so elegant, maybe rename adc_input_i to data_14_bit_i or sth similar
+    .adc_input_i   (iir_output), // todo: not so elegant, maybe rename adc_input_i to data_14_bit_i or sth similar
     .iq_input_i    (inphase_iq_demod),
     .demod_input_i (demod_filtered_data1),        // Using lock-in channel 1
     .demod_input_valid_i (demod_filtered_tvalid1),
