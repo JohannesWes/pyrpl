@@ -66,9 +66,9 @@ Each module gets **1MB** (0x100000) of address space:
 - Module 9: 0x40900000 - 0x409FFFFF
 - etc.
 
-**In your Verilog code**, only use the lower 16-20 bits of `sys_addr`:
+**In your Verilog code**, only use the lower 20 bits of `sys_addr`:
 ```verilog
-if (sys_addr[15:0] == 16'h0004)  // Typical: use [15:0] for register offsets
+if (sys_addr[19:0] == 20'h0004)  // Use [19:0] for register offsets (1MB address space)
 ```
 
 The Python `addr_base` (e.g., 0x40800000) is handled by the top-level module.
@@ -83,8 +83,8 @@ always @(posedge clk_i) begin
         my_register <= 32'd0;
     end
     else if (sys_wen) begin
-        case (sys_addr[15:0])
-            16'h0000: my_register <= sys_wdata;
+        case (sys_addr[19:0])
+            20'h0000: my_register <= sys_wdata;
             // ... more registers
         endcase
     end
@@ -107,9 +107,9 @@ always @(posedge clk_i) begin
         sys_err <= 1'b0;
         sys_ack <= sys_en;  // Acknowledge ALL transactions!
 
-        case (sys_addr[15:0])
-            16'h0000: sys_rdata <= my_register;
-            16'h0004: sys_rdata <= status_register;
+        case (sys_addr[19:0])
+            20'h0000: sys_rdata <= my_register;
+            20'h0004: sys_rdata <= status_register;
             default:  sys_rdata <= 32'h0;  // Unmapped addresses return 0
         endcase
     end
@@ -129,11 +129,11 @@ enable = BoolRegister(0x00, doc="Enable module")
 
 **Verilog:**
 ```verilog
-localparam ADDR_ENABLE = 16'h0000;
+localparam ADDR_ENABLE = 20'h00000;
 reg enable_reg;  // 1-bit register
 
 // Write
-if (sys_addr[15:0] == ADDR_ENABLE && sys_wen)
+if (sys_addr[19:0] == ADDR_ENABLE && sys_wen)
     enable_reg <= sys_wdata[0];
 
 // Read
@@ -149,11 +149,11 @@ threshold = IntRegister(0x04, bits=16, min=0, max=65535)
 
 **Verilog:**
 ```verilog
-localparam ADDR_THRESHOLD = 16'h0004;
+localparam ADDR_THRESHOLD = 20'h00004;
 reg [15:0] threshold_reg;  // 16-bit unsigned
 
 // Write
-if (sys_addr[15:0] == ADDR_THRESHOLD && sys_wen)
+if (sys_addr[19:0] == ADDR_THRESHOLD && sys_wen)
     threshold_reg <= sys_wdata[15:0];
 
 // Read
@@ -170,11 +170,11 @@ gain = FloatRegister(0x08, bits=14, norm=2**13)
 
 **Verilog:**
 ```verilog
-localparam ADDR_GAIN = 16'h0008;
+localparam ADDR_GAIN = 20'h00008;
 reg signed [13:0] gain_reg;  // 14-bit SIGNED (2's complement)
 
 // Write
-if (sys_addr[15:0] == ADDR_GAIN && sys_wen)
+if (sys_addr[19:0] == ADDR_GAIN && sys_wen)
     gain_reg <= sys_wdata[13:0];
 
 // Read (sign-extend to 32 bits)
@@ -197,7 +197,7 @@ mode = SelectRegister(0x0C,
 
 **Verilog:**
 ```verilog
-localparam ADDR_MODE = 16'h000C;
+localparam ADDR_MODE = 20'h0000C;
 reg [1:0] mode_reg;  // 2 bits = 4 options (0-3)
 
 // Define mode values as localparam for readability
@@ -207,7 +207,7 @@ localparam MODE_TRIGGERED  = 2'd2;
 localparam MODE_GATED      = 2'd3;
 
 // Write
-if (sys_addr[15:0] == ADDR_MODE && sys_wen)
+if (sys_addr[19:0] == ADDR_MODE && sys_wen)
     mode_reg <= sys_wdata[1:0];
 
 // Read
@@ -229,11 +229,11 @@ frequency = FrequencyRegister(0x10, bits=32)
 
 **Verilog:**
 ```verilog
-localparam ADDR_FREQUENCY = 16'h0010;
+localparam ADDR_FREQUENCY = 20'h00010;
 reg [31:0] freq_reg;  // 32-bit phase increment
 
 // Write
-if (sys_addr[15:0] == ADDR_FREQUENCY && sys_wen)
+if (sys_addr[19:0] == ADDR_FREQUENCY && sys_wen)
     freq_reg <= sys_wdata;
 
 // Read
@@ -258,13 +258,13 @@ timestamp = LongRegister(0x20, bits=64, doc="64-bit timestamp")
 
 **Verilog:**
 ```verilog
-localparam ADDR_TIMESTAMP_LO = 16'h0020;  // Lower 32 bits
-localparam ADDR_TIMESTAMP_HI = 16'h0024;  // Upper 32 bits (offset +4)
+localparam ADDR_TIMESTAMP_LO = 20'h00020;  // Lower 32 bits
+localparam ADDR_TIMESTAMP_HI = 20'h00024;  // Upper 32 bits (offset +4)
 
 reg [63:0] timestamp_reg;
 
 // Write (usually read-only for timestamps, but shown for completeness)
-case (sys_addr[15:0])
+case (sys_addr[19:0])
     ADDR_TIMESTAMP_LO: timestamp_reg[31:0]  <= sys_wdata;
     ADDR_TIMESTAMP_HI: timestamp_reg[63:32] <= sys_wdata;
 endcase
@@ -293,7 +293,7 @@ reset_counter = BoolRegister(0x30, doc="Write 1 to reset counter")
 
 **Verilog:**
 ```verilog
-localparam ADDR_RESET = 16'h0030;
+localparam ADDR_RESET = 20'h00030;
 reg reset_pulse;
 
 // Write: Capture write, auto-clear after 1 cycle
@@ -302,7 +302,7 @@ always @(posedge clk_i) begin
         reset_pulse <= 1'b0;
     else begin
         reset_pulse <= 1'b0;  // Default: clear
-        if (sys_addr[15:0] == ADDR_RESET && sys_wen)
+        if (sys_addr[19:0] == ADDR_RESET && sys_wen)
             reset_pulse <= sys_wdata[0];  // Set for 1 cycle
     end
 end
@@ -404,7 +404,7 @@ my_register = IntRegister(0x04)
 
 **Verilog (WRONG):**
 ```verilog
-localparam ADDR_MY_REG = 16'h0008;  // WRONG ADDRESS!
+localparam ADDR_MY_REG = 20'h00008;  // WRONG ADDRESS!
 ```
 
 **Solution**: Always double-check addresses match exactly!
@@ -465,13 +465,13 @@ reg signed [13:0] gain_reg;
 
 **Verilog (WRONG):**
 ```verilog
-assign sys_rdata = (sys_addr[15:0] == 16'h00) ? reg1 : reg2;  // Combinational!
+assign sys_rdata = (sys_addr[19:0] == 20'h00) ? reg1 : reg2;  // Combinational!
 ```
 
 **Solution**: Always register outputs:
 ```verilog
 always @(posedge clk_i) begin
-    sys_rdata <= (sys_addr[15:0] == 16'h00) ? reg1 : reg2;  // Registered
+    sys_rdata <= (sys_addr[19:0] == 20'h00) ? reg1 : reg2;  // Registered
 end
 ```
 

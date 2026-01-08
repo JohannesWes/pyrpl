@@ -43,25 +43,25 @@ module example_hardware_module (
 //=============================================================================
 
 // Control Registers (Read/Write)
-localparam ADDR_ENABLE     = 16'h0000;  // BoolRegister: Enable/disable module
-localparam ADDR_GAIN       = 16'h0004;  // FloatRegister: Signal gain (14-bit signed)
-localparam ADDR_THRESHOLD  = 16'h0008;  // IntRegister: Threshold value (16-bit)
-localparam ADDR_MODE       = 16'h000C;  // SelectRegister: Operating mode (2 bits for 4 modes)
-localparam ADDR_FREQUENCY  = 16'h0010;  // FrequencyRegister: Operating frequency (32-bit)
+localparam ADDR_ENABLE     = 20'h00000;  // BoolRegister: Enable/disable module
+localparam ADDR_GAIN       = 20'h00004;  // FloatRegister: Signal gain (14-bit signed)
+localparam ADDR_THRESHOLD  = 20'h00008;  // IntRegister: Threshold value (16-bit)
+localparam ADDR_MODE       = 20'h0000C;  // SelectRegister: Operating mode (2 bits for 4 modes)
+localparam ADDR_FREQUENCY  = 20'h00010;  // FrequencyRegister: Operating frequency (32-bit)
 
 // Status Registers (Read-Only)
-localparam ADDR_COUNTER    = 16'h0020;  // IntRegister: Event counter (32-bit, read-only)
-localparam ADDR_OVERFLOW   = 16'h0024;  // BoolRegister: Overflow flag (read-only)
+localparam ADDR_COUNTER    = 20'h00020;  // IntRegister: Event counter (32-bit, read-only)
+localparam ADDR_OVERFLOW   = 20'h00024;  // BoolRegister: Overflow flag (read-only)
 
 // Action Registers (Write-Only)
-localparam ADDR_RESET      = 16'h0030;  // BoolRegister: Write 1 to reset counter
+localparam ADDR_RESET      = 20'h00030;  // BoolRegister: Write 1 to reset counter
 
 // Configuration Register
-localparam ADDR_CONFIG     = 16'h0040;  // IntRegister: Configuration (internal use)
+localparam ADDR_CONFIG     = 20'h00040;  // IntRegister: Configuration (internal use)
 
 // Optional: 64-bit register example (uncomment if using LongRegister in Python)
-// localparam ADDR_TIMESTAMP_LO = 16'h0050;  // Lower 32 bits of 64-bit timestamp
-// localparam ADDR_TIMESTAMP_HI = 16'h0054;  // Upper 32 bits of 64-bit timestamp
+// localparam ADDR_TIMESTAMP_LO = 20'h00050;  // Lower 32 bits of 64-bit timestamp
+// localparam ADDR_TIMESTAMP_HI = 20'h00054;  // Upper 32 bits of 64-bit timestamp
 
 //=============================================================================
 // Internal Registers
@@ -111,7 +111,7 @@ always @(posedge clk_i) begin
 
         // Handle write requests
         if (sys_wen) begin
-            case (sys_addr[15:0])
+            case (sys_addr[19:0])
                 ADDR_ENABLE:    enable_reg    <= sys_wdata[0];
                 ADDR_GAIN:      gain_reg      <= sys_wdata[13:0];  // 14-bit signed
                 ADDR_THRESHOLD: threshold_reg <= sys_wdata[15:0];
@@ -153,7 +153,7 @@ always @(posedge clk_i) begin
         sys_ack <= sys_en;
 
         // Read data multiplexer
-        case (sys_addr[15:0])
+        case (sys_addr[19:0])
             // Control registers (read back written values)
             ADDR_ENABLE:    sys_rdata <= {31'b0, enable_reg};
             ADDR_GAIN:      sys_rdata <= {{18{gain_reg[13]}}, gain_reg};  // Sign-extend 14-bit
