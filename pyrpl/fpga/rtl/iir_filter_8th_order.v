@@ -46,28 +46,33 @@ module iir_filter_8th_order #(
     reg signed [COEFF_WIDTH-1:0] coeff_rom [0:3][0:4];
     
     initial begin
-        // Section 0: poles at 0.816
+        // 8th-order Butterworth, fc=1kHz, fs=30517.58Hz
+        // Each section normalized to unity DC gain (MATLAB approach)
+        // B coefficients: b0, 2*b0, b0 (lowpass structure)
+        // A coefficients: -a1, -a2 (negated for add-only accumulator)
+        
+        // Section 0
         coeff_rom[0][0] = 28'sd147577;      // B0
         coeff_rom[0][1] = 28'sd295155;      // B1  
         coeff_rom[0][2] = 28'sd147577;      // B2
         coeff_rom[0][3] = 28'sd27359891;    // A1 = -a1
         coeff_rom[0][4] = -28'sd11172985;   // A2 = -a2
         
-        // Section 1: poles at 0.842
+        // Section 1
         coeff_rom[1][0] = 28'sd151428;
         coeff_rom[1][1] = 28'sd302856;
         coeff_rom[1][2] = 28'sd151428;
         coeff_rom[1][3] = 28'sd28073726;
         coeff_rom[1][4] = -28'sd11902221;
         
-        // Section 2: poles at 0.892
+        // Section 2
         coeff_rom[2][0] = 28'sd159098;
         coeff_rom[2][1] = 28'sd318195;
         coeff_rom[2][2] = 28'sd159098;
         coeff_rom[2][3] = 28'sd29495685;
         coeff_rom[2][4] = -28'sd13354860;
         
-        // Section 3: poles at 0.961
+        // Section 3
         coeff_rom[3][0] = 28'sd170373;
         coeff_rom[3][1] = 28'sd340746;
         coeff_rom[3][2] = 28'sd170373;
@@ -79,10 +84,11 @@ module iir_filter_8th_order #(
     // STATE MACHINE
     // ========================================================================
     localparam S_IDLE    = 3'd0;
-    localparam S_SETUP   = 3'd1;  // Setup multiplier operands
-    localparam S_MULT    = 3'd2;  // Wait for multiply, accumulate
-    localparam S_UPDATE  = 3'd3;  // Update history, move to next section
-    localparam S_OUTPUT  = 3'd4;  // Final output
+    localparam S_SETUP   = 3'd1;  // Setup multiplier operands (registered)
+    localparam S_WAIT    = 3'd2;  // Wait one cycle for operands to register
+    localparam S_MULT    = 3'd3;  // Accumulate product (now valid)
+    localparam S_UPDATE  = 3'd4;  // Update history, move to next section
+    localparam S_OUTPUT  = 3'd5;  // Final output
     
     reg [2:0] state;
     reg [2:0] term_idx;     // 0..4 (B0, B1, B2, A1, A2)
@@ -194,12 +200,19 @@ module iir_filter_8th_order #(
                             mult_coeff <= {COEFF_WIDTH{1'b0}};
                         end
                     endcase
+                    state <= S_WAIT;  // Go to WAIT state for operands to register
+                end
+                
+                // ------------------------------------------------------------
+                S_WAIT: begin
+                    // Wait one cycle for mult_data and mult_coeff to register
+                    // Product will be valid on the next clock edge
                     state <= S_MULT;
                 end
                 
                 // ------------------------------------------------------------
                 S_MULT: begin
-                    // Accumulate product (product is now valid from S_SETUP operands)
+                    // Accumulate product (product is now valid from registered operands)
                     accumulator <= accumulator + product;
                     
                     if (term_idx == 3'd4) begin
