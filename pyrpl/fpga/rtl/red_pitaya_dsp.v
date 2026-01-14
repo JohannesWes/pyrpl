@@ -407,7 +407,7 @@ assign trig_o = trig_signal;
  end endgenerate
 */
 
-/*
+
 // additional IQ wires
 wire [PHASEBITS-1:0] iq_phase [7:0];
 wire signed [LUTBITS-1:0]   iq_sin [7:0];
@@ -482,7 +482,7 @@ generate for (j = 6; j < 7; j = j+1) begin
      );
 end endgenerate
 */
-/*
+
 // IQ module with two outputs
 generate for (j = 7; j < 8; j = j+1) begin
    red_pitaya_iq_block #( .QUADRATUREFILTERSTAGES(4) )
@@ -523,6 +523,5 @@ assign iq2_sin_o = iq_sin[7];
 
 assign inphase_iq_demod_o = inphase_iq_demod;
 assign iir_output = output_direct[4];
-*/
 
 endmodule
