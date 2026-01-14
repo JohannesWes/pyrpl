@@ -120,14 +120,16 @@ module iir_filter_8th_order #(
     wire signed [ACC_WIDTH-1:0] scaled_acc;
     assign scaled_acc = accumulator >>> COEFF_FRAC;
     
+    // Saturation bounds for 32-bit signed output (properly sign-extended to 64 bits)
+    localparam signed [ACC_WIDTH-1:0] SAT_MAX = 64'sh00000000_7FFFFFFF;  // +2147483647
+    localparam signed [ACC_WIDTH-1:0] SAT_MIN = 64'shFFFFFFFF_80000000;  // -2147483648
+    
     // Saturated output for section
     wire signed [DATA_WIDTH-1:0] saturated_output;
     assign saturated_output = 
-        (scaled_acc > {{(ACC_WIDTH-DATA_WIDTH){1'b0}}, {(DATA_WIDTH-1){1'b1}}}) ? 
-            {1'b0, {(DATA_WIDTH-1){1'b1}}} :  // Positive saturation
-        (scaled_acc < {{(ACC_WIDTH-DATA_WIDTH){1'b1}}, {(DATA_WIDTH-1){1'b0}}}) ?
-            {1'b1, {(DATA_WIDTH-1){1'b0}}} :  // Negative saturation
-        scaled_acc[DATA_WIDTH-1:0];           // Normal
+        (scaled_acc > SAT_MAX) ? 32'sh7FFF_FFFF :  // Positive saturation
+        (scaled_acc < SAT_MIN) ? 32'sh8000_0000 :  // Negative saturation
+        scaled_acc[DATA_WIDTH-1:0];                // Normal
 
     // ========================================================================
     // MAIN STATE MACHINE
@@ -237,8 +239,7 @@ module iir_filter_8th_order #(
                     section_input <= saturated_output;
                     
                     // Check for saturation (overflow indicator)
-                    if (scaled_acc > {{(ACC_WIDTH-DATA_WIDTH){1'b0}}, {(DATA_WIDTH-1){1'b1}}} ||
-                        scaled_acc < {{(ACC_WIDTH-DATA_WIDTH){1'b1}}, {(DATA_WIDTH-1){1'b0}}}) begin
+                    if (scaled_acc > SAT_MAX || scaled_acc < SAT_MIN) begin
                         overflow <= 1'b1;
                     end
                     
