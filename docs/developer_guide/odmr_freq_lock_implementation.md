@@ -1,9 +1,5 @@
 # ODMR Frequency Lock Implementation
 
-**Date:** 2025-01-30  
-**Status:** ✅ Complete - Ready for FPGA compilation and testing  
-**Planning Reference:** `odmr_tracking_planning.md`
-
 ---
 
 ## Table of Contents
@@ -26,21 +22,51 @@
 This implementation addresses **tracking a time-varying resonance frequency** in a physical system (e.g., optically-detected magnetic resonance in nitrogen-vacancy centers in diamond).
 
 **Signal Generation:**
-- The FPGA generates a **frequency-modulated RF signal** via DDS at approximately 20 MHz:
-  ```
-  f(t) = f₀(t) + f_dev × sin(2π × f_m × t)
-  ```
-  where `f₀(t)` is the center frequency to be locked to resonance, `f_dev` is the frequency deviation, and `f_m ≈ 15.25 kHz` is the modulation frequency.
+The FPGA generates a **frequency-modulated RF signal** via DDS at approximately 20 MHz:
+```
+f(t) = f₀(t) + f_dev × sin(2π × f_m × t)
+```
+where `f₀(t)` is the center frequency to be locked to resonance, `f_dev` is the frequency deviation, and `f_m ≈ 15.25 kHz` is the modulation frequency.
 
 **Physical Response:**
-- The signal excites a **Lorentzian resonance** at frequency `f_r(t)` which drifts over time due to environmental factors.
-- Lock-in demodulation extracts a **dispersion-like signal** that is linear in detuning around resonance:
-  ```
-  e[n] ≈ K × (f₀[n] - f_r[n])
-  ```
-  where `K ≈ 1.1 LSB/Hz` is the measured slope.
+The signal excites a **Lorentzian resonance** at frequency `f_r(t)` which drifts over time due to environmental factors. The signal from the system is measured via fluorescence intensity. The resonance shape can be approximated as a quadratic polynomial:
+$$
+    v_{\mathrm{fl}}(t) = V_0\left(1 - \frac{C}{1 + \left(\frac{f(t) - f_{\mathrm{r}}(t)}{\sigma}\right)^2}\right) \approx V_0\left(1 - C + \frac{C}{\sigma^2}\,(f(t) - f_{\mathrm{r}}(t))^2\right)
+$$
 
-  ![Discriminator signal showing linear region around resonance](image-1.png)
+where $V_0$ is the baseline level, $C$ is the contrast, and $\sigma$ is the half-width at half-maximum (HWHM).
+
+
+For lock-in demodulation, the measured fluorescence signal is multiplied with the reference/modulation signal and low-pass filtered:
+
+$$
+    v_\mathrm{out} =  v_\mathrm{fl}(t) \cos(2 \pi f_m t) * h_\mathrm{LPF}(t)
+$$
+
+Combining the above equations results in a sum of sinusoids at harmonics of the modulation frequency, convolved with the low-pass filter. The cutoff frequency of the filter is chosen well below `f_m`, so only the DC component remains:
+
+$$
+    v_\mathrm{out} \approx \frac{2 C V_0 }{\sigma^2} f_\mathrm{dev} \cdot (f_0(t) - f_r(t)) * h_\mathrm{LPF}(t)
+$$
+
+The goal of the control system is to keep `f₀(t)` equal to `f_r(t)` by adjusting `f₀(t)` based on the demodulated signal `v_out` (tracking the resonance frequency `f_r(t)`).
+
+The plant/system thus has the transfer function
+
+$$
+    G(z) = \frac{2 C V_0}{\sigma^2} f_\mathrm{dev} \cdot H_\mathrm{LPF}(z)
+$$
+
+In discrete time (sampled at ~30.5 kS/s after decimation), the demodulated signal (which serves as the error signal for the control loop) is:
+
+$$
+    e[n] = v_\mathrm{out}[n] = K_0 \cdot ((f_0(t) - f_r(t)) * h_\mathrm{LPF})[n]
+$$
+
+  e[n] ≈ K_0 × (h_LPF * (f_0 - f_r))[n]
+  ```
+
+![Discriminator signal showing linear region around resonance](image-1.png)
 
 **Control Objective:**
 > **Lock the FPGA-generated frequency f₀(t) to the resonance frequency f_r(t) by keeping the demodulated signal e[n] at its zero-crossing.**
@@ -96,7 +122,7 @@ $$
 
 **Parameters:**
 - `e[n]`: Demodulated error (32-bit signed LSB from FIR output)
-- `K`: Discriminator slope (measured; typical value 1.1 LSB/Hz)
+- `K`: Discriminator slope (measured; typical value could be 1.1 LSB/Hz)
 - `f₀[n]`: FPGA-generated center frequency
 - `f_r[n]`: Physical resonance frequency (time-varying)
 
@@ -267,15 +293,6 @@ if (!pi_saturated)
 else
     ftw_corr <= ftw_corr;      // Hold (anti-windup)
 ```
-
-#### Resource Utilization
-
-| Resource | I-only Mode | PI Mode |
-|----------|-------------|---------|
-| DSP48E slices | 1 | 2 |
-| LUTs | ~150 | ~200 |
-| FFs | ~180 | ~200 |
-| Clock | 125 MHz (single-cycle) | 125 MHz |
 
 ### Python Hardware Module (`odmr_freq_lock.py`)
 
