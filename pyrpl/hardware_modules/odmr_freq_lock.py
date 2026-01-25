@@ -324,7 +324,8 @@ class OdmrFreqLock(HardwareModule):
 
         For PI control with zero placement at BW/α:
             K_p = α / K
-        where K is the discriminator slope (LSB/Hz) and α ∈ [2, 4].
+        where K is the discriminator slope (LSB/Hz). Typical α ∈ [2, 4], but
+        values from 0.1 to 30 are valid for experimentation.
 
         Example: For α=3 with K=1.1 LSB/Hz:
             K_p ≈ 2.7273 Hz/LSB
@@ -466,7 +467,7 @@ class OdmrFreqLock(HardwareModule):
                                      Default 1.1 from planning document.
             zero_ratio (float): Ratio of bandwidth to zero frequency (α).
                                Default 3 places zero at BW/3 for good damping.
-                               Typical range: 2-4.
+                               Typical range: 2-4. Valid range: 0.1-30.
 
         Uses PI control formulas:
             μ = (2π * BW * Ts) / K         [integral step, Hz/LSB]

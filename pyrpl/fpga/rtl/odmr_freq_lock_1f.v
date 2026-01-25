@@ -37,6 +37,22 @@
  * - Default μ_FTW: 0x01EDE8D0 ≈ 1.929 FTW/LSB (for 300 Hz BW, K=1.1 LSB/Hz)
  * - Default FTW_LIM: 34359738 (±1 MHz correction range)
  *
+ * ANTI-WINDUP STRATEGY (Directional):
+ * ===================================
+ * In PI mode, the proportional term can cause output saturation even when the
+ * integrator is small (especially during acquisition from large errors).
+ *
+ * Standard anti-windup (freeze when saturated) would permanently lock the
+ * integrator at zero, preventing acquisition.
+ *
+ * This implementation uses DIRECTIONAL anti-windup:
+ * - If PI sum saturates positive AND integrator update is positive: FREEZE
+ * - If PI sum saturates negative AND integrator update is negative: FREEZE
+ * - Otherwise: ALLOW (integrator can recover from saturation)
+ *
+ * This enables PI mode to acquire lock from large initial errors while still
+ * preventing classical integrator wind-up.
+ *
  * REGISTER MAP (System Bus Region 8):
  * ====================================
  * 0x0000  CTRL        [RW]  Control bits (enable, invert, hold, clr, deadband_en, prop_enable)
@@ -271,8 +287,10 @@ wire signed [PHASEBITS-1:0] p_term = (ctrl_prop_enable && !deadband_skip)
                                      : {PHASEBITS{1'b0}};
 
 // PI saturation
-// Compute full PI sum (unsaturated integrator + proportional term)
-wire signed [PHASEBITS:0] ftw_pi_sum = sum_extended + $signed(p_term);
+// Compute full PI sum: current integrator state + proportional term
+// Note: Use ftw_corr (x[n]), not sum_extended (x[n+1]), for correct PI formula:
+//   u[n] = x[n] - K_p * e[n]
+wire signed [PHASEBITS:0] ftw_pi_sum = $signed({ftw_corr[PHASEBITS-1], ftw_corr}) + $signed(p_term);
 
 // Check saturation on full PI sum
 wire sat_pi_pos = (ftw_pi_sum > ftw_lim_signed);
@@ -298,6 +316,13 @@ wire signed [PHASEBITS-1:0] ftw_corr_saturated =
 
 // Lock detector: count consecutive samples below deadband
 wire in_lock_range = (err_abs < reg_deadband);
+
+// Directional anti-windup: only freeze integrator if update would worsen saturation
+// If PI sum saturates positive AND integrator would increase (delta > 0): freeze
+// If PI sum saturates negative AND integrator would decrease (delta < 0): freeze
+// Otherwise: allow integrator to update (helps recover from saturation)
+wire freeze_integrator = (sat_pi_pos && !delta_ftw[PHASEBITS-1]) ||
+                         (sat_pi_neg && delta_ftw[PHASEBITS-1]);
 
 //-----------------------------------------------------------------------------
 // INTEGRATOR UPDATE (Clocked Process)
@@ -330,15 +355,16 @@ always @(posedge clk_i) begin
       if (ctrl_enable && !ctrl_hold) begin
 
         if (!deadband_skip) begin
-          // Anti-windup: Only update integrator if PI sum doesn't saturate
-          if (!pi_saturated) begin
-            // Update integrator to unsaturated value (correct PI anti-windup)
+          // Directional anti-windup: freeze integrator only if update would
+          // worsen saturation. Allow updates that help recovery from saturation.
+          // This enables PI mode to acquire lock from large initial errors.
+          if (!freeze_integrator) begin
             ftw_corr         <= sum_extended[PHASEBITS-1:0];
             flag_i_saturated <= saturated;
           end else begin
-            // PI sum saturated: hold integrator (anti-windup)
+            // Integrator frozen (update would worsen saturation)
             ftw_corr         <= ftw_corr;
-            flag_i_saturated <= saturated;  // Still track I-only saturation
+            flag_i_saturated <= saturated;
           end
           flag_pi_saturated <= pi_saturated;
 
