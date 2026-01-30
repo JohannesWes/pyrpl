@@ -38,6 +38,14 @@ reg        fir_bypass_ch2;     // Bypass FIR for channel 2 (use CIC output direc
 reg [1:0]  filter_select_ch1;  // Channel 1 filter: 0=500Hz, 1=2kHz, 2=5kHz
 reg [1:0]  filter_select_ch2;  // Channel 2 filter: 0=500Hz, 1=2kHz, 2=5kHz
 
+// IIR overflow monitoring
+wire       iir_overflow1;      // Pulse from IIR filter ch1
+wire       iir_overflow2;      // Pulse from IIR filter ch2
+reg        iir_overflow1_sticky;  // Latched overflow (cleared by software)
+reg        iir_overflow2_sticky;  // Latched overflow (cleared by software)
+reg [15:0] iir_overflow1_count;   // Count of overflow events
+reg [15:0] iir_overflow2_count;   // Count of overflow events
+
 // Multiplexers for reference signal selection
 wire signed [LUTBITS-1:0] ref_signal_selected1;
 wire signed [LUTBITS-1:0] ref_signal_selected2;
@@ -263,17 +271,19 @@ iir_filter_8th_order iir_filter_8th_order_inst_ch1 (
   .ce(dec_m_axis_data_tvalid1),                  // output wire s_axis_data_tready
   .data_in(decimator_output1),                   // input wire [39 : 0] s_axis_data_tdata
   .valid_out(iir_1kHz_valid1),                   // output wire m_axis_data_tvalid
-  .data_out(iir_1kHz_output1)                    // output wire [31 : 0] m_axis_data_tdata
+  .data_out(iir_1kHz_output1),                   // output wire [31 : 0] m_axis_data_tdata
+  .overflow(iir_overflow1)                       // output wire overflow indicator
 );
 
 // IIR lowpass 1000Hz instance - Channel 2
 iir_filter_8th_order iir_filter_8th_order_inst_ch2 (
   .clk(clk_i),                                  // input wire aclk
   .rst_n(rstn_i),                               // input wire s_axis_data_tvalid
-  .ce(dec_m_axis_data_tvalid2),                                        // output wire s_axis_data_tready
+  .ce(dec_m_axis_data_tvalid2),                 // output wire s_axis_data_tready
   .data_in(decimator_output2),                  // input wire [39 : 0] s_axis_data_tdata
-  .valid_out(iir_1kHz_valid2),                                 // output wire m_axis_data_tvalid
-  .data_out(iir_1kHz_output2)                    // output wire [31 : 0] m_axis_data_tdata
+  .valid_out(iir_1kHz_valid2),                  // output wire m_axis_data_tvalid
+  .data_out(iir_1kHz_output2),                  // output wire [31 : 0] m_axis_data_tdata
+  .overflow(iir_overflow2)                      // output wire overflow indicator
 );
 
 // Select between FIR outputs based on filter_select
@@ -373,11 +383,46 @@ always @(posedge clk_i) begin
     end
 end
 
+// IIR overflow sticky latch and counter logic
+always @(posedge clk_i) begin
+    if (!rstn_i) begin
+        iir_overflow1_sticky <= 1'b0;
+        iir_overflow2_sticky <= 1'b0;
+        iir_overflow1_count <= 16'd0;
+        iir_overflow2_count <= 16'd0;
+    end else begin
+        // Latch overflow (sticky until cleared by writing to status register)
+        if (iir_overflow1)
+            iir_overflow1_sticky <= 1'b1;
+        if (iir_overflow2)
+            iir_overflow2_sticky <= 1'b1;
+        
+        // Count overflow events (saturate at max)
+        if (iir_overflow1 && iir_overflow1_count != 16'hFFFF)
+            iir_overflow1_count <= iir_overflow1_count + 1'b1;
+        if (iir_overflow2 && iir_overflow2_count != 16'hFFFF)
+            iir_overflow2_count <= iir_overflow2_count + 1'b1;
+        
+        // Clear sticky flags when writing to status register (0x004)
+        if (sys_wen && sys_addr[19:0] == 20'h00004) begin
+            if (sys_wdata[0]) begin
+                iir_overflow1_sticky <= 1'b0;
+                iir_overflow1_count <= 16'd0;
+            end
+            if (sys_wdata[1]) begin
+                iir_overflow2_sticky <= 1'b0;
+                iir_overflow2_count <= 16'd0;
+            end
+        end
+    end
+end
+
 // System bus interface - write logic
 // Register map:
 //   0x000: ref_select1 (bits 1:0), ref_select2 (bits 3:2),
 //          fir_bypass_ch1 (bit 4), fir_bypass_ch2 (bit 5),
 //          filter_select_ch1 (bits 7:6), filter_select_ch2 (bits 9:8)
+//   0x004: Status register (write 1 to clear overflow flags)
 always @(posedge clk_i) begin
     if (!rstn_i) begin
         ref_select1 <= 2'd0;     // Default: sin
@@ -411,9 +456,17 @@ always @(posedge clk_i) begin
     end else begin
         sys_err <= 1'b0;
         casez (sys_addr[19:0])
-            20'h00000: begin
+            20'h00000: begin  // Control register
                 sys_ack   <= sys_en;
                 sys_rdata <= {22'b0, filter_select_ch2, filter_select_ch1, fir_bypass_ch2, fir_bypass_ch1, ref_select2, ref_select1};
+            end
+            20'h00004: begin  // Status register (overflow)
+                sys_ack   <= sys_en;
+                sys_rdata <= {iir_overflow2_count, iir_overflow1_count};  // bits 31:16 = ch2 count, bits 15:0 = ch1 count
+            end
+            20'h00008: begin  // Overflow flags
+                sys_ack   <= sys_en;
+                sys_rdata <= {30'b0, iir_overflow2_sticky, iir_overflow1_sticky};  // bit 1 = ch2, bit 0 = ch1
             end
             default: begin
                 sys_ack   <= sys_en;
