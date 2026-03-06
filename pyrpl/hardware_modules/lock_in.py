@@ -34,8 +34,10 @@ class LockIn(HardwareModule):
 
     addr_base = 0x40700000
 
-    _setup_attributes = ['ref_select1', 'ref_select2', 'fir_bypass_ch1', 'fir_bypass_ch2', 'filter_select_ch1', 'filter_select_ch2']
-    _gui_attributes = _setup_attributes
+    _setup_attributes = ['ref_select1', 'ref_select2', 'fir_bypass_ch1', 'fir_bypass_ch2',
+                         'filter_select_ch1', 'filter_select_ch2',
+                         'demod_bypass_ch1', 'demod_bypass_ch2']
+    _gui_attributes = list(_setup_attributes)
 
     # Reference signal selection for channel 1 (bits 1:0 of address 0x000)
     ref_select1 = SelectRegister(0x000,
@@ -102,6 +104,26 @@ class LockIn(HardwareModule):
                                            "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
                                            "2kHz: Bandwidth 2 kHz (CIC+FIR). "
                                            "5kHz: Bandwidth 5 kHz (CIC+FIR).")
+
+    # Demodulation bypass for channel 1 (bit 10 of address 0x000)
+    demod_bypass_ch1 = BoolRegister(0x000,
+                                     bit=10,
+                                     default=False,
+                                     doc="Bypass demodulation for channel 1 (DC ODMR mode). "
+                                         "When True: reference signal replaced by fixed constant, "
+                                         "ADC passes through CIC/FIR as a lowpass decimation filter "
+                                         "without frequency mixing. Same gain scaling as demodulated path. "
+                                         "When False: normal lock-in demodulation with selected reference.")
+
+    # Demodulation bypass for channel 2 (bit 11 of address 0x000)
+    demod_bypass_ch2 = BoolRegister(0x000,
+                                     bit=11,
+                                     default=False,
+                                     doc="Bypass demodulation for channel 2 (DC ODMR mode). "
+                                         "When True: reference signal replaced by fixed constant, "
+                                         "ADC passes through CIC/FIR as a lowpass decimation filter "
+                                         "without frequency mixing. Same gain scaling as demodulated path. "
+                                         "When False: normal lock-in demodulation with selected reference.")
 
     def _setup(self):
         """

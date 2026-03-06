@@ -30,6 +30,11 @@ module lock_in #(
 
 localparam EXTEND_BITS_TO_32 = 32 - (DATA_WIDTH + LUTBITS);
 
+// Maximum positive value for signed LUTBITS-wide number: 2^(LUTBITS-1) - 1
+// Used as fixed reference when demodulation is bypassed (DC ODMR mode),
+// to maintain the same gain scaling as normal lock-in demodulation.
+localparam signed [LUTBITS-1:0] BYPASS_CONSTANT = {1'b0, {(LUTBITS-1){1'b1}}};  // = 65535
+
 // Control registers for system bus interface
 reg [1:0]  ref_select1;        // Channel 1: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
 reg [1:0]  ref_select2;        // Channel 2: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
@@ -37,6 +42,8 @@ reg        fir_bypass_ch1;     // Bypass FIR for channel 1 (use CIC output direc
 reg        fir_bypass_ch2;     // Bypass FIR for channel 2 (use CIC output directly)
 reg [1:0]  filter_select_ch1;  // Channel 1 filter: 0=500Hz, 1=2kHz, 2=5kHz
 reg [1:0]  filter_select_ch2;  // Channel 2 filter: 0=500Hz, 1=2kHz, 2=5kHz
+reg        demod_bypass_ch1;   // Bypass demodulation for channel 1 (DC passthrough mode)
+reg        demod_bypass_ch2;   // Bypass demodulation for channel 2 (DC passthrough mode)
 
 // Multiplexers for reference signal selection
 wire signed [LUTBITS-1:0] ref_signal_selected1;
@@ -67,8 +74,8 @@ always @(posedge clk_i) begin
     end else begin
         adc_input_reg1  <= adc_input_i;
         adc_input_reg2  <= adc_input_i;
-        ref_signal_reg1 <= ref_signal_selected1;
-        ref_signal_reg2 <= ref_signal_selected2;
+        ref_signal_reg1 <= demod_bypass_ch1 ? BYPASS_CONSTANT : ref_signal_selected1;
+        ref_signal_reg2 <= demod_bypass_ch2 ? BYPASS_CONSTANT : ref_signal_selected2;
     end
 end
 
@@ -295,6 +302,8 @@ always @(posedge clk_i) begin
         fir_bypass_ch2 <= 1'b0;  // Default: use FIR (bypass OFF)
         filter_select_ch1 <= 2'd0; // Default: 500Hz
         filter_select_ch2 <= 2'd0; // Default: 500Hz
+        demod_bypass_ch1 <= 1'b0;  // Default: demodulation ON (lock-in mode)
+        demod_bypass_ch2 <= 1'b0;  // Default: demodulation ON (lock-in mode)
     end else begin
         if (sys_wen) begin
             if (sys_addr[19:0] == 20'h00000) begin
@@ -304,6 +313,8 @@ always @(posedge clk_i) begin
                 fir_bypass_ch2 <= sys_wdata[5];
                 filter_select_ch1 <= sys_wdata[7:6];
                 filter_select_ch2 <= sys_wdata[9:8];
+                demod_bypass_ch1 <= sys_wdata[10];
+                demod_bypass_ch2 <= sys_wdata[11];
             end
         end
     end
@@ -322,7 +333,7 @@ always @(posedge clk_i) begin
         casez (sys_addr[19:0])
             20'h00000: begin
                 sys_ack   <= sys_en;
-                sys_rdata <= {22'b0, filter_select_ch2, filter_select_ch1, fir_bypass_ch2, fir_bypass_ch1, ref_select2, ref_select1};
+                sys_rdata <= {20'b0, demod_bypass_ch2, demod_bypass_ch1, filter_select_ch2, filter_select_ch1, fir_bypass_ch2, fir_bypass_ch1, ref_select2, ref_select1};
             end
             default: begin
                 sys_ack   <= sys_en;
