@@ -26,7 +26,12 @@ pauses, Qt event-loop stalls, and network jitter.
 Bandwidth was never the problem (122 KB/s vs. a ~20 MB/s ceiling for
 `/dev/mem` + Ethernet). The problem was *where the deadline lived*. Push
 streaming moves it onto the ARM, where ring access is microseconds and
-deterministic, and gives ~8 s of socket-buffer headroom for PC stalls.
+deterministic. The ARM keeps the FPGA ring drained continuously; the TCP send
+buffer additionally absorbs PC-side stalls. The server requests a 1 MB
+`SO_SNDBUF`, but the kernel clamps it to `net.core.wmem_max` (160 KB on RP OS
+v1.04) ≈ ~1.3 s of stall headroom at 122 KB/s, plus the PC receive buffer on
+top — still ~10x the 134 ms ring. (Raising `net.core.wmem_max` would grant more,
+but the deeper resilience lever is Tier 2's larger FPGA BRAM.)
 
 ## Architecture
 
@@ -125,12 +130,19 @@ Invariants a consumer can rely on:
 - `n_seq_skips == 0` always (TCP + seq numbers); non-zero indicates a transport
   bug, not normal loss.
 - `n_gap > 0` only on a genuine FPGA-ring overrun (should not happen under
-  normal load given the ~8 s buffer headroom); those samples appear as NaN.
+  normal load given the >1 s buffer headroom); those samples appear as NaN.
 
 ## qudi integration notes
 
-The qudi hardware module (`redpitaya_finite_sampling`) currently uses the legacy
-`scan.stream_start()` / `stream_read()` poll API. To migrate to push streaming:
+> Status: **done.** The qudi hardware module
+> `qudi.hardware.redpitaya.redpitaya_data_instream.RedPitayaDataInStream`
+> (in the `qudi-iqo-modules` repo) has been migrated from the legacy poll API to
+> push streaming. The notes below document how that mapping was done (and how to
+> migrate any other consumer). The legacy `scan.stream_*` poll API remains for
+> back-compat.
+
+The module previously used the legacy `scan.stream_start()` / `stream_read()`
+poll API. The push-streaming mapping:
 
 - **Start/stop:** call `scan.push_stream_start(input_source=...)` in the
   acquisition start (e.g. `start_buffered_acquisition`) and
