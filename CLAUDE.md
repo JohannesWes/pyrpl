@@ -186,6 +186,17 @@ p.rp.scan.dwell_time = 0.001   # Convert 1ms→125000 cycles, write to 0x4050000
 
 The Scan module recently received significant performance improvements for continuous data streaming.
 
+**Push streaming (robust, recommended):** In addition to the legacy poll-based
+`stream_read`, the Scan module now supports ARM-side drain + TCP push streaming,
+which moves the real-time deadline off the PC/network and onto the board and
+NaN-fills any lost samples instead of dropping them silently. API:
+`scan.push_stream_start('demod'|'ftw_corr')`, `push_stream_read()` (float64,
+NaN = loss), `push_stream_iter()`, `push_stream_stats()`, `push_stream_stop()`.
+Implemented by `pyrpl/monitor_server/stream_server.c` (compiled natively on the
+board), `pyrpl/stream_client.py`, `pyrpl/stream_deploy.py`, and lazy
+`RedPitaya.ensure_stream_server()`. See
+`docs/developer_guide/scan_push_streaming.md` (includes qudi-integration notes).
+
 ### ODMR Frequency Lock Integration
 
 A new hardware module for ODMR (Optically-Detected Magnetic Resonance) frequency tracking has been implemented:

@@ -119,6 +119,7 @@ from ..modules import HardwareModule
 from ..widgets.module_widgets.scan_widget import ScanWidget
 from ..attributes import (IntRegister, FloatProperty, BoolRegister,
                           SelectRegister, BaseRegister)
+from ..stream_client import StreamClient
 
 # from ..dsp import InputSelectRegister # Cannot use this due to FPGA limitation
 # from ..pyrpl_utils import time
@@ -473,6 +474,89 @@ class Scan(HardwareModule):
                 yield arr
             else:
                 time.sleep(poll_interval)
+
+    # ----------- Push streaming (ARM-side drain + TCP push) -------------
+    # Robust alternative to the poll-based stream_read above: the deadline-
+    # critical ring drain runs locally on the Red Pitaya ARM and pushes a
+    # continuous framed stream to the PC, which reads it without polling. Lost
+    # samples (FPGA overrun) are reported explicitly and NaN-filled, never
+    # silently dropped. See pyrpl/stream_client.py and
+    # pyrpl/monitor_server/stream_server.c.
+    def push_stream_start(self, input_source="demod", poll_us=200,
+                          force_recompile=False):
+        """Start robust push-based streaming of demod or FTW-correction data.
+
+        Selects the input, resets+enables the FPGA stream engine over the normal
+        register path, ensures the ARM streaming server is running, and starts a
+        background receiver. Returns the :class:`StreamClient`.
+
+        Args:
+            input_source (str): 'demod' or 'ftw_corr'.
+            poll_us (int): ARM idle poll interval when caught up.
+            force_recompile (bool): rebuild the ARM server binary.
+        """
+        if input_source not in ("demod", "ftw_corr"):
+            logger.warning("Push streaming supports 'demod' and 'ftw_corr' only; "
+                           "using 'demod'.")
+            input_source = "demod"
+        # 1. select input and reset+enable the FPGA stream engine (register path)
+        self.input_select = input_source
+        self._stream_ctrl_write(enable=True, reset=True)
+        # 2. ensure the ARM push-streaming server is up; get its port
+        port = self.parent.ensure_stream_server(force_recompile=force_recompile)
+        host = self.parent.parameters['hostname']
+        # 3. start the background receiver
+        self._push_rx = StreamClient(host, port, addr_base=self.addr_base,
+                                     poll_us=poll_us)
+        self._push_rx.start()
+        self._push_input = input_source
+        logger.info("Push streaming started (%s) from %s:%d", input_source, host, port)
+        return self._push_rx
+
+    def push_stream_read(self):
+        """Return all samples received since the last call.
+
+        Returns:
+            np.ndarray float64, in order, with NaN where the FPGA overran the ARM
+            drainer (so the time axis stays truthful). Empty if not streaming.
+        """
+        rx = getattr(self, '_push_rx', None)
+        if rx is None:
+            return np.empty(0, dtype=np.float64)
+        return rx.read()
+
+    def push_stream_iter(self, poll_interval=0.05, min_samples=1):
+        """Yield batches of received samples until streaming stops."""
+        rx = getattr(self, '_push_rx', None)
+        while rx is not None and rx.running:
+            data = rx.read()
+            if data.size >= min_samples:
+                yield data
+            else:
+                time.sleep(poll_interval)
+        if rx is not None:
+            tail = rx.read()
+            if tail.size:
+                yield tail
+
+    def push_stream_stats(self):
+        """Return streaming counters (samples, gaps, frames, seq skips, error)."""
+        rx = getattr(self, '_push_rx', None)
+        return rx.stats() if rx is not None else {}
+
+    def push_stream_stop(self, stop_server=False):
+        """Stop the receiver and disable the FPGA stream engine.
+
+        The ARM server is left running by default for fast restarts; pass
+        ``stop_server=True`` (or call ``rp.stop_stream_server()``) to stop it.
+        """
+        rx = getattr(self, '_push_rx', None)
+        if rx is not None:
+            rx.stop()
+        self._stream_ctrl_write(enable=False)
+        if stop_server:
+            self.parent.stop_stream_server()
+        logger.info("Push streaming stopped.")
 
     def ftw_to_hz(self, ftw_values):
         """Convert raw FTW (Frequency Tuning Word) values to Hz.

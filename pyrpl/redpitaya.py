@@ -17,6 +17,7 @@
 ###############################################################################
 
 from . import redpitaya_client
+from . import stream_deploy
 from . import hardware_modules as rp
 from .sshshell import SshShell
 from .pyrpl_utils import get_unique_name_list_from_class_list, update_with_typeconversion
@@ -58,6 +59,7 @@ defaultparameters = dict(
     frequency_correction=1.0,  # actual FPGA frequency is 125 MHz * frequency_correction
     timeout=1,  # timeout in seconds for ssh communication
     monitor_server_name='monitor_server',  # name of the server program on redpitaya
+    stream_port=None,  # TCP port for the scan-module push-streaming server (None -> port+1000)
     silence_env=False,   # suppress all environment variables that may override the configuration?
     gui=True  # show graphical user interface or work on command-line only?
     )
@@ -502,3 +504,36 @@ class RedPitaya(object):
         r._master = self
         self._slaves.append(r)
         return r
+
+    def stream_server_port(self):
+        """TCP port used by the scan-module push-streaming server."""
+        p = self.parameters.get('stream_port', None)
+        return int(p) if p else int(self.parameters['port']) + 1000
+
+    def ensure_stream_server(self, force_recompile=False):
+        """Lazily deploy, compile and start the scan-module push-streaming
+        server on its own port and return that port.
+
+        This is invoked on demand the first time push-streaming is started; it
+        is *not* part of the normal startup path and never touches the register
+        ``monitor_server``. The server is a separate, read-only process compiled
+        natively on the board (correct ABI for any Red Pitaya OS).
+        """
+        if getattr(self, 'ssh', None) is None:
+            raise ExpectedPyrplError(
+                "Push-streaming requires an SSH connection to the board "
+                "(not available with a dummy client).")
+        port = self.stream_server_port()
+        stream_deploy.deploy_and_start(
+            self.ssh.ssh, port, self.parameters['serverdirname'],
+            force_recompile=force_recompile)
+        return port
+
+    def stop_stream_server(self):
+        """Stop the push-streaming server (no-op if not running)."""
+        if getattr(self, 'ssh', None) is None:
+            return
+        try:
+            stream_deploy.stop(self.ssh.ssh, self.stream_server_port())
+        except Exception as e:  # noqa: BLE001 - best-effort cleanup
+            self.logger.debug("stop_stream_server: %s", e)
