@@ -9,10 +9,6 @@ drain + TCP push* model. The deadline-critical work happens locally on the
 board; the PC just reads a socket. Lost samples are reported explicitly and
 NaN-filled — never silently dropped.
 
-> Status: implemented and hardware-validated (Tier 1). No FPGA rebuild required.
-> A 90 s recording sustained 30,516.8 Hz (theory 30,517) with **0 gaps, 0
-> sequence skips, 0 loss**.
-
 ---
 
 ## Why
@@ -26,12 +22,28 @@ pauses, Qt event-loop stalls, and network jitter.
 Bandwidth was never the problem (122 KB/s vs. a ~20 MB/s ceiling for
 `/dev/mem` + Ethernet). The problem was *where the deadline lived*. Push
 streaming moves it onto the ARM, where ring access is microseconds and
-deterministic. The ARM keeps the FPGA ring drained continuously; the TCP send
-buffer additionally absorbs PC-side stalls. The server requests a 1 MB
-`SO_SNDBUF`, but the kernel clamps it to `net.core.wmem_max` (160 KB on RP OS
-v1.04) ≈ ~1.3 s of stall headroom at 122 KB/s, plus the PC receive buffer on
-top — still ~10x the 134 ms ring. (Raising `net.core.wmem_max` would grant more,
-but the deeper resilience lever is Tier 2's larger FPGA BRAM.)
+deterministic.
+
+**Decoupled drain / send (DRAM ring).** The BRAM drain and the TCP send are
+decoupled by a large userspace ring buffer in ordinary ARM DRAM (default
+16 MB). Each iteration the server drains the FPGA BRAM into the DRAM ring (a
+microsecond memcpy that always meets the hard 134 ms FPGA deadline) and
+*separately* attempts a **non-blocking** send. If the PC's receive path stalls
+(GC pause, OS freeze, network hiccup), `send()` just returns `EAGAIN` while the
+drain keeps running — the DRAM ring absorbs the backlog. Stall headroom is
+therefore `ring_bytes / wire_rate`: ~15 s @100 kS/s up to ~2 min @30 kS/s with
+the 16 MB default, tunable via `ring_bytes`. Only if the *DRAM ring itself*
+fills is anything lost, and that is reported as an explicit NaN gap.
+
+This replaced an earlier design that did drain→*blocking*-send in one step: a
+stalled PC blocked `send()`, which **halted the drain**, so the FPGA lapped the
+reader after 134 ms (headroom was just the ~160 KB `SO_SNDBUF` ≈ 1.3 s). The
+ring removes that coupling.
+
+**Frame coalescing.** Samples are batched into one frame until `coalesce_us`
+(default 5 ms) elapses or a frame fills, cutting the 16-byte header from
+>50% of the wire (the old per-iteration framing sent ~3 samples/frame) to a few
+percent, and the ARM frame rate from ~10 k/s to ~200/s (CPU ~1–3 %).
 
 ## Architecture
 
@@ -75,8 +87,10 @@ stream stays on the normal register path.
 Little-endian throughout (ARM and x86 are both LE). See `stream_server.c` for the
 authoritative definition.
 
-**Request** (PC → server, once after connect): 9 × uint32
-`magic('RPSS'), mmap_base, mmap_size, wrptr_addr, samples_addr, data_addr, depth, poll_us, sndbuf`.
+**Request** (PC → server, once after connect): 11 × uint32
+`magic('RPSS'), mmap_base, mmap_size, wrptr_addr, samples_addr, data_addr, depth, poll_us, sndbuf, ring_bytes, coalesce_us`.
+- `ring_bytes` = ARM DRAM ring size (0 = 16 MB default) — sets stall headroom.
+- `coalesce_us` = max ARM batching latency (0 = 5 ms default; 1 ≈ no coalescing).
 
 **Frame** (server → PC, repeated): 4 × uint32 header + payload
 `magic('RPSF'), seq, gap, n` then `n × int32`.
@@ -104,6 +118,11 @@ scan = rp.scan
 # Start: selects input, resets+enables the FPGA stream engine, deploys+starts
 # the ARM server if needed, and starts the PC receiver thread.
 scan.push_stream_start(input_source='demod')      # or 'ftw_corr'
+
+# Tune stall headroom / batching latency (optional):
+#   ring_bytes  : ARM DRAM ring size (0 = 16 MB default). e.g. 64<<20 for ~60 s.
+#   coalesce_us : max ARM batching latency in us (0 = 5 ms default).
+scan.push_stream_start(input_source='demod', ring_bytes=64 << 20, coalesce_us=5000)
 
 # Read: returns all samples since the last call (float64). NaN marks any span
 # the FPGA overran the drainer (loss is explicit, never silent).
@@ -181,10 +200,21 @@ These import the real shipping `stream_client.py` / `stream_deploy.py` (the
 
 ## Limitations / future work
 
-- **Tier 2 (optional, needs one FPGA rebuild):** add a sticky overrun flag in
-  `STREAM_STATUS[1]` (FPGA-level loss detection) and a deeper stream BRAM
-  (16k–32k samples) for additional headroom.
+- **Stall headroom** is now set by the ARM DRAM ring (`ring_bytes`, default
+  16 MB ≈ 15 s–2 min depending on rate), which absorbs PC-side stalls in
+  userspace DRAM without touching the OS or FPGA. Validated: an 8 s PC-recv
+  freeze caused **0 loss** with the default ring; a deliberately tiny 512 KB
+  ring overflowed and reported the loss as an exact NaN gap (`nan == gap`,
+  0 seq-skips); a SIGSTOP'd ARM server (BRAM overrun) likewise reported an exact
+  NaN gap and recovered.
+- **Tier 2 (optional, needs one FPGA rebuild):** a sticky overrun flag in
+  `STREAM_STATUS[1]` would add FPGA-level loss detection. Largely moot for
+  headroom now that the DRAM ring dwarfs the BRAM; mainly of interest for
+  detecting a drain that falls >134 ms behind under severe CPU starvation.
 - **Tier 3 (not pursued):** AXI-DMA to DDR — the "textbook" RP solution for
   MHz-rate raw ADC streaming, but overkill for this 122 KB/s demod/FTW stream.
+  The DRAM ring already buffers in DRAM (ARM CPU copy) without the AXI-DMA build
+  or a reserved-memory carveout; the FPGA-DMA version only earns its keep at
+  much higher (MS/s) rates where the ARM CPU can no longer keep up.
 - The legacy poll API (`stream_start`/`stream_read`/…) remains for backward
   compatibility and can be retired once consumers migrate.

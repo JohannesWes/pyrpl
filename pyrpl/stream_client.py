@@ -51,7 +51,7 @@ logger = logging.getLogger(name=__name__)
 
 REQ_MAGIC = 0x52505353    # 'RPSS'
 FRAME_MAGIC = 0x52505346  # 'RPSF'
-REQUEST_WORDS = 9         # uint32 words in the request header
+REQUEST_WORDS = 11        # uint32 words in the request header
 
 # Scan-module register/BRAM offsets relative to its base address (scan_new.v).
 SCAN_STREAM_WR_PTR_OFFSET = 0x28
@@ -81,6 +81,15 @@ class StreamClient(object):
     sndbuf, rcvbuf : int
         Optional socket buffer overrides (0 = OS default). Mainly for testing
         backpressure behaviour.
+    ring_bytes : int
+        Size of the ARM-side userspace DRAM ring that decouples the BRAM drain
+        from TCP send (0 = server default, 16 MB). This sets the PC-stall
+        headroom: ``ring_bytes / wire_rate`` seconds before any sample is lost
+        (e.g. 16 MB at ~1 MB/s wire rate => ~15 s).
+    coalesce_us : int
+        Max latency (microseconds) the ARM waits to batch samples into one frame
+        (0 = server default, 5000). Larger reduces per-frame header overhead and
+        wire rate at the cost of latency; 1 ~ no coalescing.
 
     Notes
     -----
@@ -89,7 +98,8 @@ class StreamClient(object):
     """
 
     def __init__(self, host, port, addr_base,
-                 depth=SCAN_RING_DEPTH, poll_us=200, sndbuf=0, rcvbuf=0):
+                 depth=SCAN_RING_DEPTH, poll_us=200, sndbuf=0, rcvbuf=0,
+                 ring_bytes=0, coalesce_us=0):
         self.host = host
         self.port = int(port)
         self._rcvbuf = rcvbuf
@@ -99,7 +109,8 @@ class StreamClient(object):
             addr_base + SCAN_STREAM_WR_PTR_OFFSET,
             addr_base + SCAN_STREAM_SAMPLES_OFFSET,
             addr_base + SCAN_DATA3_OFFSET,
-            int(depth), int(poll_us), int(sndbuf))
+            int(depth), int(poll_us), int(sndbuf),
+            int(ring_bytes), int(coalesce_us))
         self._sock = None
         self._thread = None
         self._running = False

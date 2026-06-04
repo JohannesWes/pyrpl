@@ -25,6 +25,7 @@ whatever Red Pitaya OS is installed (no cross-toolchain needed). It runs as a
 proven register path is never touched.
 """
 import os
+import hashlib
 import logging
 
 logger = logging.getLogger(name=__name__)
@@ -33,6 +34,12 @@ logger = logging.getLogger(name=__name__)
 STREAM_SERVER_C = os.path.join(os.path.dirname(__file__),
                                'monitor_server', 'stream_server.c')
 STREAM_SERVER_BIN = 'stream_server'
+STREAM_SERVER_SHA = 'stream_server.sha'  # marker: sha256 of the compiled source
+
+
+def _source_sha(path):
+    with open(path, 'rb') as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
 
 
 def _exec(ssh, cmd, timeout=30):
@@ -60,26 +67,36 @@ def deploy_and_start(ssh, port, remote_dir, c_source=STREAM_SERVER_C,
                      force_recompile=False):
     """Ensure stream_server is built and running on ``port``.
 
-    Idempotent: uploads + compiles the source only if the binary is missing
-    (or ``force_recompile``), then starts a detached instance if not already
-    running. Returns the port on success, raises RuntimeError on failure.
+    Idempotent and source-aware: (re)uploads + compiles the source whenever the
+    binary is missing, ``force_recompile`` is set, or the deployed source's
+    sha256 differs from ``c_source`` (so a changed wire protocol can never leave
+    a stale binary running). If a rebuild is needed and an old instance is
+    running, it is stopped first, then the freshly built one is started. Returns
+    the port on success, raises RuntimeError on failure.
     """
     remote_dir = remote_dir.rstrip('/') + '/'
     remote_src = remote_dir + 'stream_server.c'
     remote_bin = remote_dir + STREAM_SERVER_BIN
+    remote_sha = remote_dir + STREAM_SERVER_SHA
 
-    if is_running(ssh, port):
-        logger.debug("stream_server already running on port %d", port)
-        return port
+    if not os.path.isfile(c_source):
+        raise RuntimeError("stream_server source not found: %s" % c_source)
+    local_sha = _source_sha(c_source)
 
     _exec(ssh, "mkdir -p %s" % remote_dir)
 
-    # (re)compile if needed
-    rc, out, _ = _exec(ssh, "test -x %s && echo yes || echo no" % remote_bin)
-    need_build = force_recompile or out.strip() != "yes"
+    # decide whether a rebuild is required (missing binary or changed source)
+    rc, has_bin, _ = _exec(ssh, "test -x %s && echo yes || echo no" % remote_bin)
+    rc, dep_sha, _ = _exec(ssh, "cat %s 2>/dev/null || true" % remote_sha)
+    need_build = (force_recompile or has_bin.strip() != "yes"
+                  or dep_sha.strip() != local_sha)
+
     if need_build:
-        if not os.path.isfile(c_source):
-            raise RuntimeError("stream_server source not found: %s" % c_source)
+        # a stale/old server must not keep running with the previous protocol
+        if is_running(ssh, port):
+            logger.info("stream_server source changed; stopping stale instance "
+                        "on port %d", port)
+            stop(ssh, port)
         logger.info("uploading and compiling stream_server on the board ...")
         sftp = ssh.open_sftp()
         try:
@@ -91,6 +108,11 @@ def deploy_and_start(ssh, port, remote_dir, c_source=STREAM_SERVER_C,
                  % (remote_dir, STREAM_SERVER_BIN))
         if "BUILD_OK" not in out:
             raise RuntimeError("stream_server build failed:\n%s\n%s" % (out, err))
+        # record the sha of the source we just compiled
+        _exec(ssh, "printf %%s %s > %s" % (local_sha, remote_sha))
+    elif is_running(ssh, port):
+        logger.debug("stream_server already running on port %d (up to date)", port)
+        return port
 
     # start detached so it survives the SSH channel closing
     logfile = remote_dir + "stream_server_%d.log" % port

@@ -483,7 +483,7 @@ class Scan(HardwareModule):
     # silently dropped. See pyrpl/stream_client.py and
     # pyrpl/monitor_server/stream_server.c.
     def push_stream_start(self, input_source="demod", poll_us=200,
-                          force_recompile=False):
+                          ring_bytes=0, coalesce_us=0, force_recompile=False):
         """Start robust push-based streaming of demod or FTW-correction data.
 
         Selects the input, resets+enables the FPGA stream engine over the normal
@@ -493,6 +493,11 @@ class Scan(HardwareModule):
         Args:
             input_source (str): 'demod' or 'ftw_corr'.
             poll_us (int): ARM idle poll interval when caught up.
+            ring_bytes (int): ARM-side DRAM ring size, setting the PC-stall
+                headroom (``ring_bytes / wire_rate`` seconds). 0 = 16 MB default
+                (~15 s); pass e.g. ``64<<20`` for ~60 s.
+            coalesce_us (int): max ARM batching latency in microseconds
+                (0 = 5 ms default). Larger trims frame-header overhead.
             force_recompile (bool): rebuild the ARM server binary.
         """
         if input_source not in ("demod", "ftw_corr"):
@@ -507,7 +512,8 @@ class Scan(HardwareModule):
         host = self.parent.parameters['hostname']
         # 3. start the background receiver
         self._push_rx = StreamClient(host, port, addr_base=self.addr_base,
-                                     poll_us=poll_us)
+                                     poll_us=poll_us, ring_bytes=ring_bytes,
+                                     coalesce_us=coalesce_us)
         self._push_rx.start()
         self._push_input = input_source
         logger.info("Push streaming started (%s) from %s:%d", input_source, host, port)
