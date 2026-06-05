@@ -34,61 +34,86 @@ Provides continuous streaming of demodulated lock-in data at ~30.5 kHz without
 triggering or step sequencing. This mode is designed for real-time monitoring
 and high-throughput data collection.
 
+**>>> Use the push streaming API for new code. <<<**
+The canonical streaming path is now `push_stream_start/read/iter/stats/stop`
+(ARM-side drain + TCP push): it moves the real-time deadline onto the board and
+NaN-fills lost samples instead of dropping them silently. The poll-based
+`stream_*` API documented below is **deprecated** (emits a DeprecationWarning)
+and retained only as a zero-dependency fallback (no SSH deploy / no second TCP
+port). See `docs/developer_guide/scan_push_streaming.md`.
+
 **Stream Architecture:**
-*   Uses the data3 BRAM (4096 x 32-bit words) as a circular ring buffer
-*   FPGA writes incoming demodulated samples to incrementing addresses
-*   Python reads data in batches using efficient block reads
-*   Independent read/write pointers prevent data loss (with overflow detection)
+*   The FPGA writes 32-bit samples to the data3 BRAM (4096 words) as a circular
+    ring buffer; this ring is shared by both streaming paths.
+*   Canonical (push): the ARM `stream_server` drains the BRAM ring locally and
+    pushes a framed TCP stream to the PC; the PC never reads the BRAM directly.
+*   Deprecated (poll): the PC reads the BRAM ring in batches via block reads,
+    tracking independent read/write pointers with software overflow detection.
 
 **Stream vs Scan Mode:**
 *   Mutually exclusive: streaming blocks scan functionality (shared BRAM)
-*   Stream mode only supports 'demod' input (32-bit @ ~30.5 kHz)
+*   Supported inputs: 'demod' (lock-in error) and 'ftw_corr' (ODMR correction),
+    both 32-bit @ ~30.5 kHz
 *   No triggering, settling, or accumulation - raw samples streamed directly
 *   Optimized for minimal latency and maximum throughput
 
 **Performance Characteristics:**
 *   Sample rate: ~30.5 kHz (125 MHz / 4096 decimation)
-*   Buffer depth: 4096 samples (~134 ms at full rate)
-*   Typical read latency: 5-20 ms depending on batch size and network
-*   Overflow protection: Automatic detection and recovery with warning
+*   FPGA ring depth: 4096 samples (~134 ms); push adds an ARM DRAM ring
+    (default 16 MB ≈ 15 s–2 min headroom) so PC-side stalls do not lose data
+*   Typical read latency: ~5 ms (push `coalesce_us` default) plus network
+*   Loss handling: push NaN-fills genuine overruns explicitly; the deprecated
+    poll path auto-resets and logs a warning
 
-**Typical Streaming Workflow:**
+**Typical Streaming Workflow (canonical: push API):**
 ```python
 # 1. Stream demodulated error (loop open)
-scan.stream_start(input_source='demod')
-for batch in scan.stream_iter(poll_interval=0.01, batch=256):
-    process_demod_data(batch)  # batch is np.ndarray of int32 samples
-scan.stream_stop()
+scan.push_stream_start(input_source='demod')
+for batch in scan.push_stream_iter(poll_interval=0.05):
+    process_demod_data(batch)  # batch is np.ndarray of float64; NaN = lost sample
+scan.push_stream_stop()
 
 # 2. Stream FTW correction (loop closed, tracking resonance)
 odmr.enable = True  # Enable ODMR frequency lock
-scan.stream_start(input_source='ftw_corr')
-for batch in scan.stream_iter(poll_interval=0.01, batch=256):
-    freq_drift_hz = scan.ftw_to_hz(batch)  # Convert FTW to Hz
+scan.push_stream_start(input_source='ftw_corr')
+for batch in scan.push_stream_iter(poll_interval=0.05):
+    freq_drift_hz = scan.ftw_to_hz(batch)  # Convert FTW to Hz (NaN-safe)
     monitor_frequency_drift(freq_drift_hz)
-scan.stream_stop()
+scan.push_stream_stop()
 
-# 3. Or manual reads
+# 3. Or manual reads (paced to your own cadence; no 134 ms deadline)
 while acquiring:
-    ftw_data = scan.stream_read(max_samples=512)
-    if ftw_data.size > 0:
-        freq_hz = scan.ftw_to_hz(ftw_data)
+    data = scan.push_stream_read()  # all samples since last call (float64)
+    if data.size:
+        freq_hz = scan.ftw_to_hz(data)
         process_data(freq_hz)
-    time.sleep(0.005)
+    time.sleep(0.05)
 ```
 
-**Stream API Methods:**
+**Stream API Methods (canonical: ARM-side push):**
+*   `push_stream_start()` - Select input, enable engine, start ARM server + PC receiver
+*   `push_stream_stop()`  - Stop receiver and disable the FPGA stream engine
+*   `push_stream_read()`  - All samples since last call (float64; NaN = lost)
+*   `push_stream_iter()`  - Generator yielding batches until stopped
+*   `push_stream_stats()` - Health counters (n_samples, n_gap, n_seq_skips, ...)
+    See `docs/developer_guide/scan_push_streaming.md` for the full design.
+
+**Stream API Methods (deprecated: poll-based fallback):**
+Retained as a zero-dependency fallback (pure register reads, no SSH deploy / no
+second TCP port). Each emits a DeprecationWarning. Prefer the push API above.
 *   `stream_start()` - Enable streaming (resets FPGA pointers)
 *   `stream_stop()` - Disable streaming
 *   `stream_status()` - Get (active, wr_ptr, samples_written)
-*   `stream_read()` - Read available samples (non-blocking)
+*   `stream_read()` - Read available samples (non-blocking; int32)
 *   `stream_iter()` - Generator yielding batches until stopped
 
-**Overflow Handling:**
-*   Software-only overflow detection by comparing sample counters
-*   Tracks if FPGA writer has advanced by >= buffer depth (4096 samples)
-*   If overflow detected: automatic reset, data loss warning logged
-*   Mitigation: increase read frequency or batch size to keep up with rate
+**Loss Handling:**
+*   Push API: the ARM drainer detects FPGA-ring overruns locally and reports lost
+    spans explicitly; the PC NaN-fills them so the time axis stays truthful.
+    A large ARM DRAM ring (default 16 MB) absorbs PC-side stalls (~15 s–2 min).
+*   Poll API (deprecated): software-only overflow detection by comparing sample
+    counters; on overrun it resets and logs a data-loss warning. Mitigate by
+    reading more frequently — i.e. the fragility the push API removes.
 
 ================================================================================
 Input Modes (Both Scan and Stream)
@@ -112,6 +137,7 @@ BRAM Banks (Memory-Mapped Storage)
     - Stream mode: Ring buffer for continuous demodulated data streaming
 """
 import time
+import warnings
 import numpy as np
 import logging
 
@@ -125,6 +151,37 @@ from ..stream_client import StreamClient
 # from ..pyrpl_utils import time
 
 logger = logging.getLogger(__name__)
+
+# Tracks which legacy stream_* methods have already emitted their deprecation
+# warning this process, so the warning fires once per method instead of on every
+# call (stream_read in particular runs in a tight poll loop).
+_LEGACY_STREAM_WARNED = set()
+
+
+def _warn_legacy_stream(method):
+    """Emit a one-time DeprecationWarning steering callers to push_stream_*.
+
+    The poll-based stream_* API is superseded by the ARM-side push streaming
+    (push_stream_start/read/iter/stats/stop), which moves the real-time deadline
+    onto the board and NaN-fills lost samples instead of dropping them silently.
+    The poll API is retained as a zero-dependency fallback (no SSH deploy / no
+    second TCP port). See docs/developer_guide/scan_push_streaming.md.
+    """
+    if method in _LEGACY_STREAM_WARNED:
+        return
+    _LEGACY_STREAM_WARNED.add(method)
+    warnings.warn(
+        "Scan.{0}() is deprecated: use the push streaming API "
+        "(push_stream_start/read/iter/stats/stop) instead. The poll-based "
+        "stream_* API is kept only as a zero-dependency fallback. "
+        "See docs/developer_guide/scan_push_streaming.md.".format(method),
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    logger.warning(
+        "Scan.%s() is deprecated; prefer push_stream_* (see "
+        "docs/developer_guide/scan_push_streaming.md).", method)
+
 
 # Define constants based on scan_new.v
 MAX_STEPS_BITS = 12
@@ -324,7 +381,12 @@ class Scan(HardwareModule):
             - Uses the data3 BRAM region (32-bit words) as a circular buffer.
             - Blocks scanning functionality while active (shared memory).
             - For tracking resonance drift, use 'ftw_corr' when ODMR lock is enabled.
+
+        .. deprecated::
+            Use :meth:`push_stream_start` (ARM-side push streaming). The poll API
+            is retained only as a zero-dependency fallback.
         """
+        _warn_legacy_stream("stream_start")
         if input_source not in ["demod", "ftw_corr"]:
             logger.warning("Streaming only supported for 'demod' and 'ftw_corr'. Forcing input_select to 'demod'.")
             input_source = "demod"
@@ -339,7 +401,11 @@ class Scan(HardwareModule):
 
 
     def stream_stop(self):
-        """Disable streaming and clear software-side counters."""
+        """Disable streaming and clear software-side counters.
+
+        .. deprecated:: Use :meth:`push_stream_stop`.
+        """
+        _warn_legacy_stream("stream_stop")
         self._stream_ctrl_write(enable=False)
         self._stream_active = False
 
@@ -371,7 +437,10 @@ class Scan(HardwareModule):
         Returns:
             np.ndarray int32 of shape (n,) with the read samples. If accessed via RPyC,
             this will be a netref and the user must convert it using data.tolist() to get a local array.
+
+        .. deprecated:: Use :meth:`push_stream_read` (returns float64, NaN = loss).
         """
+        _warn_legacy_stream("stream_read")
         if enable_timing:
             _t_start = time.time()
             _timings = {}
@@ -466,7 +535,10 @@ class Scan(HardwareModule):
             batch (int): preferred batch size
         Yields:
             np.ndarray int32
+
+        .. deprecated:: Use :meth:`push_stream_iter`.
         """
+        _warn_legacy_stream("stream_iter")
         # TODO: Check if this will block other operations. If so, potentially use async as in scope module.
         while getattr(self, '_stream_active', False):
             arr = self.stream_read(max_samples=batch)

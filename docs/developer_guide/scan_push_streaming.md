@@ -27,9 +27,9 @@ deterministic.
 **Decoupled drain / send (DRAM ring).** The BRAM drain and the TCP send are
 decoupled by a large userspace ring buffer in ordinary ARM DRAM (default
 16 MB). Each iteration the server drains the FPGA BRAM into the DRAM ring (a
-microsecond memcpy that always meets the hard 134 ms FPGA deadline) and
-*separately* attempts a **non-blocking** send. If the PC's receive path stalls
-(GC pause, OS freeze, network hiccup), `send()` just returns `EAGAIN` while the
+microsecond memcpy) and *separately* attempts a **non-blocking** send.
+If the PC's receive path stalls (GC pause, OS freeze, network hiccup),
+`send()` just returns `EAGAIN` while the
 drain keeps running — the DRAM ring absorbs the backlog. Stall headroom is
 therefore `ring_bytes / wire_rate`: ~15 s @100 kS/s up to ~2 min @30 kS/s with
 the 16 MB default, tunable via `ring_bytes`. Only if the *DRAM ring itself*
@@ -80,7 +80,7 @@ stream stays on the normal register path.
 | `pyrpl/stream_client.py` | `StreamClient`: PC-side receiver, NaN-fill, seq check. Qt-free (stdlib + numpy). |
 | `pyrpl/stream_deploy.py` | Deploy/compile/start/stop the server over SSH (paramiko). Qt-free. |
 | `pyrpl/redpitaya.py` | `stream_port` param; `ensure_stream_server()` / `stop_stream_server()` (lazy; never in startup). |
-| `pyrpl/hardware_modules/scan.py` | `push_stream_start/read/iter/stats/stop` (additive; legacy poll API untouched). |
+| `pyrpl/hardware_modules/scan.py` | `push_stream_start/read/iter/stats/stop` (canonical; legacy poll API now deprecated, kept as fallback). |
 
 ## Wire protocol
 
