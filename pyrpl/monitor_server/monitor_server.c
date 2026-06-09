@@ -73,8 +73,45 @@ After this, the server will wait for the next command.
 #include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 void error(const char *msg);
+
+/* Robust, partial-transfer-safe socket I/O (hardening 2026-06-08).
+ *
+ * The original code used a single send()/recv(...,MSG_WAITALL) and treated any
+ * short count as fatal (error()->exit). Under concurrent push-stream load on the
+ * board a send/recv can legitimately return short or be interrupted (EINTR),
+ * which killed the whole register server (single-connection, no accept loop) and
+ * left the PC client spinning on a dead socket. These helpers loop over partial
+ * transfers and EINTR so a busy board never desyncs the framing, and the caller
+ * re-accepts instead of exiting on a genuine disconnect. */
+static int send_all(int fd, const void *buf, size_t len) {
+    const char *p = (const char *)buf;
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t k = send(fd, p + sent, len - sent, 0);
+        if (k > 0) { sent += (size_t)k; continue; }
+        if (k < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+            continue;
+        return -1;  /* peer closed / fatal socket error */
+    }
+    return 0;
+}
+
+/* recv exactly len bytes. returns 0 = ok, 1 = peer closed cleanly, -1 = error. */
+static int recv_all(int fd, void *buf, size_t len) {
+    char *p = (char *)buf;
+    size_t got = 0;
+    while (got < len) {
+        ssize_t k = recv(fd, p + got, len - got, 0);
+        if (k > 0) { got += (size_t)k; continue; }
+        if (k == 0) return 1;          /* orderly peer shutdown */
+        if (errno == EINTR) continue;
+        return -1;                      /* error */
+    }
+    return 0;
+}
 
 #define FATAL do { fprintf(stderr,"Error at line %d, file %s (%d) [%s]\n", __LINE__, __FILE__, errno, strerror(errno)); \
 									error("FATAL ERROR"); exit(1); } while(0)
@@ -172,8 +209,13 @@ int main(int argc, char *argv[])
          fprintf(stderr,"ERROR, no port provided\n");
          exit(1);
      }
+     /* A send() to a peer that has gone away raises SIGPIPE, whose default action
+      * kills the process. Ignore it so a dropped client can never take down the
+      * register server; send_all() returns -1 instead and we re-accept. */
+     signal(SIGPIPE, SIG_IGN);
+
      sockfd = socket(AF_INET, SOCK_STREAM, 0);
-     if (sockfd < 0) 
+     if (sockfd < 0)
         error("ERROR opening socket");
 	int enable = 1;
 	if (setsockopt(sockfd,SOL_SOCKET,SO_REUSEADDR,&enable,sizeof(int))<0)
@@ -184,63 +226,70 @@ int main(int argc, char *argv[])
      serv_addr.sin_addr.s_addr = INADDR_ANY;
      serv_addr.sin_port = htons(portno);
      if (bind(sockfd, (struct sockaddr *) &serv_addr,
-              sizeof(serv_addr)) < 0) 
+              sizeof(serv_addr)) < 0)
               error("ERROR on binding");
      listen(sockfd,5);
-     clilen = sizeof(cli_addr);
-     newsockfd = accept(sockfd, 
-                 (struct sockaddr *) &cli_addr, 
-                 &clilen);
-     if (newsockfd < 0) 
-          error("ERROR on accept");
-	 else
-		 printf("Incoming client connection accepted!");
-	
+
 	//open_map_base();
-	 //service loop
-     while (0==0) {
-		 //read next header from client
-		 bzero(buffer,8);
-		 n = recv(newsockfd,buffer,8,MSG_WAITALL);
-		 if (n < 0) error("ERROR reading from socket");
-		 if (n != 8) error("ERROR reading from socket - incorrect header length");
-		 //confirm control sequence
-	 ////n=send(newsockfd,buffer,8,0); 
-	 ////if (n != 8) error("ERROR control sequence mirror incorreclty transmitted");
-	     //interpret the header
-    	 address = ((unsigned long*)buffer)[1]; //address to be read/written
-		 data_length = buffer[2]+(buffer[3]<<8); //number of "unsigned long" to be read/written
-		 if (data_length > MAX_LENGTH)
-			 data_length = MAX_LENGTH;
-		 if (data_length == 0)
-			continue;
-		 //test for various cases Read, Write, Close
-		 else if (buffer[0] == 'r') { //read from FPGA
-			read_values(address, rw_buffer, data_length);
-			//send the data
-			n = send(newsockfd,(void*)data_buffer,data_length*sizeof(unsigned long)+8,0);
-			if (n < 0) error("ERROR writing to socket");
-			if (n != data_length*sizeof(unsigned long)+8) error("ERROR wrote incorrect number of bytes to socket");
-		 }
-		 else if  (buffer[0] == 'w') { //write to FPGA
-			//read new data from socket
-			n = recv(newsockfd,(void*)rw_buffer,data_length*sizeof(unsigned long),MSG_WAITALL);
-			if (n < 0) error("ERROR reading from socket");
-			if (n != data_length*sizeof(unsigned long)) error("ERROR read incorrect number of bytes to socket");
-			//write FPGA memory
-			write_values(address, rw_buffer, data_length);
-			n=send(newsockfd,buffer,8,0);
-			if (n != 8) error("ERROR control sequence mirror incorreclty transmitted");
-		 }
-		 else if (buffer[0] == 'c') break; //close program
-		 else error("ERROR unknown control character - server and client out of sync"); //if an unknown control sequence is received, terminate for security reasons
-	 }
-	 //close the socket
-     close(newsockfd); 
+	 /* Accept loop: serve one client at a time but SURVIVE disconnects / framing
+	  * hiccups. A connection-level problem closes just that client socket and
+	  * returns here, instead of exit()ing the whole server (the old behaviour,
+	  * which forced an SSH relaunch on every blip under stream load). */
+     for (;;) {
+         clilen = sizeof(cli_addr);
+         newsockfd = accept(sockfd,
+                     (struct sockaddr *) &cli_addr,
+                     &clilen);
+         if (newsockfd < 0) {
+             if (errno == EINTR) continue;
+             error("ERROR on accept");   /* listen socket broken -> truly fatal */
+         }
+         /* low-latency small request/response exchanges */
+         int one = 1;
+         setsockopt(newsockfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
+         //per-connection service loop
+         for (;;) {
+            //read next 8-byte header from client (robust against partial/EINTR)
+            bzero(buffer,8);
+            int rc = recv_all(newsockfd, buffer, 8);
+            if (rc != 0) break;   //peer closed (1) or error (-1) -> re-accept
+
+            //interpret the header
+            address = ((unsigned long*)buffer)[1]; //address to be read/written
+            data_length = buffer[2]+(buffer[3]<<8); //number of "unsigned long" to be read/written
+            if (data_length > MAX_LENGTH)
+                data_length = MAX_LENGTH;
+            if (data_length == 0)
+                continue;
+            //test for various cases Read, Write, Close
+            else if (buffer[0] == 'r') { //read from FPGA
+                read_values(address, rw_buffer, data_length);
+                //send header echo + data (robust against partial send/EINTR)
+                if (send_all(newsockfd, data_buffer,
+                             data_length*sizeof(unsigned long)+8) != 0)
+                    break;   //broken connection -> re-accept
+            }
+            else if  (buffer[0] == 'w') { //write to FPGA
+                //read new data from socket
+                if (recv_all(newsockfd, rw_buffer,
+                             data_length*sizeof(unsigned long)) != 0)
+                    break;   //broken/short -> re-accept (no partial FPGA write)
+                //write FPGA memory
+                write_values(address, rw_buffer, data_length);
+                if (send_all(newsockfd, buffer, 8) != 0)   //ack
+                    break;
+            }
+            else if (buffer[0] == 'c') break; //client closed this connection
+            else break; //unknown control char = desync: drop connection, re-accept
+         }
+         close(newsockfd);
+         newsockfd = -1;
+     }
+	 //not reached; cleanup on fatal error happens in error()
 	 close(sockfd);
-	 //clean up the memory mapping
 	 close_map_base();
-	 return 0; 
+	 return 0;
 }
 
 

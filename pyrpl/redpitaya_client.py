@@ -135,10 +135,25 @@ class MonitorClient(object):
         header = b'r' + bytes(bytearray([0,
                                          length & 0xFF, (length >> 8) & 0xFF,
                                          addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, (addr >> 24) & 0xFF]))
-        self.socket.send(header)
-        data = self.socket.recv(length * 4 + 8)
-        while (len(data) < length * 4 + 8):
-            data += self.socket.recv(length * 4 - len(data) + 8)
+        # sendall (not send): a partial header send desyncs the server's framing
+        # and makes monitor_server error() out (close + exit) -> see recv guard.
+        self.socket.sendall(header)
+        expected = length * 4 + 8
+        data = b''
+        while len(data) < expected:
+            chunk = self.socket.recv(expected - len(data))
+            if not chunk:
+                # Peer closed the connection mid-response. monitor_server calls
+                # error()->close()+exit(-1) on any framing hiccup (e.g. under
+                # concurrent push-stream load), after which recv() returns b''
+                # immediately and forever. The old `data += recv(...)` loop spun
+                # here indefinitely (no timeout, no exception) -- the streaming
+                # <-> register-read "hang". Raise so try_n_times() restarts and
+                # reconnects instead.
+                raise socket.error(
+                    "monitor_server closed the connection mid-read "
+                    "(got %d/%d bytes)" % (len(data), expected))
+            data += chunk
         if data[:8] == header:  # check for in-sync transmission
             return np.frombuffer(data[8:], dtype=np.uint32)
         else:  # error handling
@@ -156,10 +171,21 @@ class MonitorClient(object):
                                          (addr >> 8) & 0xFF,
                                          (addr >> 16) & 0xFF,
                                          (addr >> 24) & 0xFF]))
-        # send header+body
-        self.socket.send(header +
-                         np.array(values, dtype=np.uint32).tobytes())
-        if self.socket.recv(8) == header:  # check for in-sync transmission
+        # send header+body. sendall (not send): a partial send desyncs the
+        # server framing -> monitor_server error() (close+exit) -> wedge.
+        self.socket.sendall(header +
+                            np.array(values, dtype=np.uint32).tobytes())
+        ack = b''
+        while len(ack) < 8:
+            chunk = self.socket.recv(8 - len(ack))
+            if not chunk:
+                # Peer closed mid-ack (see _reads): raise so try_n_times()
+                # restarts instead of mis-reading a short/closed ack.
+                raise socket.error(
+                    "monitor_server closed the connection mid-write "
+                    "(got %d/8 ack bytes)" % len(ack))
+            ack += chunk
+        if ack == header:  # check for in-sync transmission
             return True  # indicate successful write
         else:  # error handling
             self.logger.error("Error: wrong control sequence from server")
