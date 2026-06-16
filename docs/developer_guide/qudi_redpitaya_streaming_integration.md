@@ -263,29 +263,6 @@ position-time interpolation.
 This path is covered in more detail by
 `docs/developer_guide/motor_position_sync_scan.md`.
 
-## Test Coverage
-
-The qudi repository contains a hardware-free logic test:
-
-```text
-scratch_test_instream_logic.py
-```
-
-It injects a fake PyRPL `StreamClient` and fake scan module into
-`RedPitayaDataInStream`. It validates:
-
-- Demod calibration.
-- FTW-to-Hz conversion.
-- NaN propagation.
-- FIFO semantics.
-- Blocking reads across multiple drains.
-- `available_samples` accounting.
-- Gap logging.
-- Finite-mode auto-stop.
-- Tail draining on stop.
-
-The PyRPL repository contains lower-level push-stream tests in `streaming_dev/`;
-those are documented in `scan_data_streaming.md`.
 
 ## Current Limitations
 
