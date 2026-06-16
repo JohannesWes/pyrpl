@@ -1,131 +1,70 @@
 /**
- * @brief Scan Module for Pyrpl - Dual-Mode Data Acquisition System
+ * @brief Scan block for triggered sweeps, streaming, and marker streaming.
  *
- * ============================================================================
- * OVERVIEW
- * ============================================================================
- * This module provides two mutually exclusive operating modes:
+ * This module has three operating configurations:
+ *   1. Scan: step-by-step triggered acquisition with 64-bit accumulation.
+ *   2. Stream: continuous 32-bit DEMOD or FTW_CORR samples into data3 BRAM.
+ *   3. Marker stream: stream mode plus x/y position-marker capture.
  *
- * 1. SCAN MODE: Step-by-step triggered sweeps with data accumulation
- * 2. STREAM MODE: Continuous ring-buffer streaming for real-time acquisition
+ * Scan mode and stream mode are mutually exclusive. Marker stream is not a
+ * separate data engine; it is stream mode with STREAM_CONTROL[2] enabled.
  *
- * Both modes share the same BRAM infrastructure but cannot run simultaneously.
+ * Scan mode:
+ *   - CONTROL/STATUS at 0x00 starts/stops/resets the scan FSM and reports
+ *     busy/done.
+ *   - Each step emits trigger_o, waits SETTLING_TIME, accumulates for
+ *     DWELL_TIME, then writes:
+ *       ram_lsb   = accumulator[31:0]
+ *       ram_msb   = accumulator[63:32]
+ *       ram_data3 = valid sample count
  *
- * ============================================================================
- * MODE 1: SCAN MODE (State Machine Controlled)
- * ============================================================================
- * Performs automated sweeps across a defined number of steps. For each step:
- * 1. Outputs a trigger pulse (trigger_o)
- * 2. Waits for a settling time (programmable delay)
- * 3. Acquires and accumulates data from selected input for a dwell time
- * 4. Stores the 64-bit accumulated sum in BRAM (split into LSB/MSB banks)
- * 5. Stores the actual sample count in data3 BRAM (for accurate averaging)
+ * Stream mode:
+ *   - INPUT_SELECT selects 2=DEMOD or 3=FTW_CORR.
+ *   - STREAM_CONTROL[0] enables the stream engine.
+ *   - STREAM_CONTROL[1] pulses a stream reset.
+ *   - Valid samples are written to ram_data3 as a 4096-word ring.
+ *   - STREAM_WR_PTR and STREAM_SAMPLES expose the producer state.
  *
- * State Machine Sequence:
- *   S_IDLE → S_START_STEP → S_TRIGGERING → S_SETTLING → S_ACQUIRING →
- *   S_STORING_REQ → S_STORING_WAIT → S_FINISHING → (repeat or S_DONE)
+ * Marker stream mode:
+ *   - STREAM_CONTROL[2] enables marker capture while streaming.
+ *   - x_pos_trig_i (DIO5_P / exp_p_in[5]) marks fast-axis bin boundaries.
+ *   - y_pos_trig_i (DIO6_P / exp_p_in[6]) marks slow-axis line boundaries.
+ *   - A rising edge writes the current reg_stream_sample_cnt into:
+ *       ram_lsb for x markers, ram_msb for y markers.
+ *   - Marker value m means stream sample index m is the first sample after that
+ *     spatial boundary. This is the hardware contract used by the PC-side
+ *     reconstruction.
  *
- * Control: Write to ADDR_CONTROL (0x00) with start/stop/reset bits
- * Status: Read busy/done flags from ADDR_STATUS (0x00)
+ * Register map, relative to module base:
+ *   0x00 CONTROL/STATUS       write: start/stop/reset, read: busy/done
+ *   0x04 NUM_STEPS            12-bit scan step count
+ *   0x08 DWELL_TIME           scan dwell in 125 MHz clock cycles
+ *   0x0C SETTLING_TIME        scan settle delay in clock cycles
+ *   0x10 TRIGGER_LENGTH       trigger pulse length in clock cycles
+ *   0x14 TRIGGER_PIN_SEL      stored, not physically routed here
+ *   0x18 CURRENT_STEP         current scan step
+ *   0x1C INPUT_SELECT         0=ADC, 1=IQ, 2=DEMOD, 3=FTW_CORR
+ *   0x20 STREAM_CONTROL       bit0 enable, bit1 reset, bit2 marker enable
+ *   0x24 STREAM_STATUS        bit0 active
+ *   0x28 STREAM_WR_PTR        data3 ring write pointer
+ *   0x2C STREAM_SAMPLES       total stream samples since reset
+ *   0x30 MARKER_X_WR_PTR      x-marker ring write pointer
+ *   0x34 MARKER_X_COUNT       total x markers since reset
+ *   0x38 MARKER_Y_WR_PTR      y-marker ring write pointer
+ *   0x3C MARKER_Y_COUNT       total y markers since reset
  *
- * ============================================================================
- * MODE 2: STREAM MODE (Free-Running Circular Buffer)
- * ============================================================================
- * Provides continuous high-speed streaming of demodulated lock-in data
- * (~30.5 kHz sample rate) without triggering or step sequencing.
+ * BRAM map:
+ *   0x10000 ram_lsb    scan accumulator LSBs or x-marker ring
+ *   0x20000 ram_msb    scan accumulator MSBs or y-marker ring
+ *   0x30000 ram_data3  scan sample counts or stream sample ring
  *
- * Architecture:
- * - Data3 BRAM (4096 x 32-bit) operates as a circular ring buffer
- * - FPGA write engine: Increments reg_stream_wr_ptr on each valid sample
- * - CPU read access: Via standard BRAM read port (address 0x30000+)
- * - Independent pointers: Writer never blocks; reader tracks position
+ * Timing notes:
+ *   - clk is 125 MHz.
+ *   - DEMOD and FTW_CORR valid pulses are expected every 4096 clocks.
+ *   - BRAM reads use the 4-cycle system-bus read pipeline below.
  *
- * Operation:
- * 1. Enable: Set ADDR_STREAM_CONTROL[0] = 1 (also triggers reset pulse)
- * 2. FPGA writes: On every demod_input_valid_i, writes demod_input_i to
- *    ram_data3[reg_stream_wr_ptr], then increments pointer (wraps at 4096)
- * 3. CPU reads: Polls ADDR_STREAM_WR_PTR to find new data, reads via
- *    BRAM port B (standard multi-cycle latency read)
- * 4. Disable: Clear ADDR_STREAM_CONTROL[0] = 0
- *
- * Streaming Registers:
- * - ADDR_STREAM_CONTROL (0x20): [0]=enable (level), [1]=reset (pulse)
- * - ADDR_STREAM_STATUS (0x24):  [0]=active
- * - ADDR_STREAM_WR_PTR (0x28):  Current FPGA write pointer (0-4095)
- * - ADDR_STREAM_SAMPLES (0x2C): Total samples written (32-bit counter)
- *
- * Overflow Prevention:
- * - Software must read faster than write rate (~30.5 kHz)
- * - If reader falls behind by 4096+ samples, data loss occurs
- * - Python layer detects this by comparing sample counters
- *
- * Performance:
- * - Sample rate: 125 MHz / 4096 ≈ 30.517 kHz (from lock-in decimation)
- * - Buffer latency: Up to 134 ms (4096 samples / 30.5 kHz)
- * - No FPGA-side overflow flag (software responsibility)
- *
- * ============================================================================
- * INPUT MODES (Both Scan and Stream)
- * ============================================================================
- * Selected via ADDR_INPUT_SELECT (0x1C):
- * - 0 (ADC):      14-bit ADC input at 125 MHz (scan only)
- * - 1 (IQ):       24-bit IQ demod output at 125 MHz (scan only)
- * - 2 (DEMOD):    32-bit lock-in output, valid every 4096 cycles (both modes)
- * - 3 (FTW_CORR): 32-bit FTW correction from ODMR tracker, valid every 4096 cycles (stream only)
- *
- * Note: Stream mode supports DEMOD and FTW_CORR inputs (enforced by Python)
- *
- * ============================================================================
- * MEMORY MAP (Relative to Module Base Address)
- * ============================================================================
- * Registers (0x00000 - 0x0FFFF):
- *   0x00: CONTROL/STATUS (write: start/stop/reset; read: busy/done)
- *   0x04: NUM_STEPS (12-bit scan step count)
- *   0x08: DWELL_TIME (32-bit cycle count per step)
- *   0x0C: SETTLING_TIME (32-bit cycle delay after trigger)
- *   0x10: TRIGGER_LENGTH (32-bit trigger pulse duration)
- *   0x14: TRIGGER_PIN_SEL (3-bit pin selection, not yet routed)
- *   0x18: CURRENT_STEP (read-only, current scan step index)
- *   0x1C: INPUT_SELECT (2-bit: 0=ADC, 1=IQ, 2=DEMOD)
- *   0x20: STREAM_CONTROL (bit0=enable, bit1=reset)
- *   0x24: STREAM_STATUS (bit0=active)
- *   0x28: STREAM_WR_PTR (12-bit write pointer)
- *   0x2C: STREAM_SAMPLES (32-bit total sample counter)
- *
- * BRAM Banks (64KB each, dual-port):
- *   LSB Bank:   0x10000 - 0x1FFFF (lower 32 bits of 64-bit accumulator)
- *   MSB Bank:   0x20000 - 0x2FFFF (upper 32 bits of 64-bit accumulator)
- *   Data3 Bank: 0x30000 - 0x3FFFF (dual-purpose: counts or stream data)
- *
- * BRAM Port A (Write): Controlled by scan FSM or stream engine
- * BRAM Port B (Read):  System bus with 4-cycle read latency pipeline
- *
- * ============================================================================
- * TIMING CONSTRAINTS
- * ============================================================================
- * - System clock: 125 MHz (8 ns period)
- * - All counters increment in clock cycles (not sample periods)
- * - Demod valid signal: High for 1 cycle every 4096 cycles (0.024% duty)
- * - BRAM read latency: 4 clock cycles (address → data available)
- * - Trigger output: Combinatorial from state machine (zero latency)
- *
- * ============================================================================
- * USAGE GUIDELINES
- * ============================================================================
- * Scan Mode:
- *   1. Configure num_steps, dwell_time, settling_time, input_select
- *   2. Write CONTROL[0] = 1 (start)
- *   3. Poll STATUS until done = 1
- *   4. Read accumulated data from LSB/MSB/Data3 banks
- *
- * Stream Mode:
- *   1. Set input_select = 2 (DEMOD)
- *   2. Write STREAM_CONTROL = 0x3 (enable + reset)
- *   3. Continuously poll STREAM_WR_PTR and read new data from Data3 bank
- *   4. Write STREAM_CONTROL = 0x0 to stop
- *
- * IMPORTANT: Never enable scan (CONTROL[0]) while streaming is active!
- *            State machine prevents this, but avoid race conditions.
+ * Full motor-scan design notes live in:
+ *   docs/developer_guide/motor_position_sync_scan.md
  */
 module scan #(
     parameter MAX_STEPS_BITS    = 12,                 // Maximum number of steps = 2^12 = 4096
@@ -148,6 +87,12 @@ module scan #(
     input wire                          demod_input_valid_i,    // Valid signal for demodulated data
     input wire signed [DATA_WIDTH_DEMOD-1:0] ftw_correction_i,  // FTW correction from ODMR tracker
     input wire                          ftw_correction_valid_i,  // Valid signal for FTW correction
+
+    // External position-step triggers from KDC101 motor controllers (one per axis).
+    // In marker-streaming mode a rising edge records the current demod sample index
+    // into the x/y marker rings (see MODE 3 below).
+    input wire                          x_pos_trig_i,            // x-axis position pulse (fast-axis bin boundary)
+    input wire                          y_pos_trig_i,            // y-axis position pulse (slow-axis line boundary)
 
     // Trigger Output
     output wire                         trigger_o,
@@ -184,6 +129,11 @@ localparam ADDR_STREAM_CONTROL  = 20'h00020; // W/R: bit0 enable (level), bit1 r
 localparam ADDR_STREAM_STATUS   = 20'h00024; // R: bit0 active
 localparam ADDR_STREAM_WR_PTR   = 20'h00028; // R: current write pointer (mod BRAM depth)
 localparam ADDR_STREAM_SAMPLES  = 20'h0002C; // R: total samples written since last reset
+// Position-marker streaming (MODE 3): x markers live in ram_lsb, y markers in ram_msb
+localparam ADDR_MARKER_X_WR_PTR = 20'h00030; // R: x-marker ring write pointer (mod BRAM depth)
+localparam ADDR_MARKER_X_COUNT  = 20'h00034; // R: total x markers written since last reset
+localparam ADDR_MARKER_Y_WR_PTR = 20'h00038; // R: y-marker ring write pointer (mod BRAM depth)
+localparam ADDR_MARKER_Y_COUNT  = 20'h0003C; // R: total y markers written since last reset
 
 // Input selection values
 localparam INPUT_SELECT_ADC      = 2'b00;
@@ -237,6 +187,13 @@ reg                         reg_stream_reset_cmd;    // One-cycle reset pulse fo
 reg                         reg_stream_active;       // Indicates streaming is active
 reg [BRAM_ADDR_BITS-1:0]    reg_stream_wr_ptr;       // Write pointer into BRAM (count bank)
 reg [32-1:0]                reg_stream_sample_cnt;   // Total samples written since last stream reset
+
+// Position-marker streaming control/status (MODE 3)
+reg                         reg_marker_enable;       // Marker capture enable (level)
+reg [BRAM_ADDR_BITS-1:0]    reg_marker_x_wr_ptr;     // x-marker ring write pointer (into ram_lsb)
+reg [32-1:0]                reg_marker_x_count;      // Total x markers since last reset
+reg [BRAM_ADDR_BITS-1:0]    reg_marker_y_wr_ptr;     // y-marker ring write pointer (into ram_msb)
+reg [32-1:0]                reg_marker_y_count;      // Total y markers since last reset
 
 // Valid sample counter for demodulated mode
 reg [32-1:0]                reg_valid_samples;      // Count of valid samples accumulated
@@ -378,6 +335,7 @@ always @(posedge clk) begin
     // Stream defaults
     reg_stream_enable      <= 1'b0;
     reg_stream_reset_cmd   <= 1'b0;
+    reg_marker_enable      <= 1'b0;
     end else begin
         // Clear command flags after one cycle
         reg_start_cmd <= 1'b0;
@@ -400,8 +358,9 @@ always @(posedge clk) begin
                 ADDR_TRIGGER_PIN_SEL: reg_trigger_pin_select <= sys_wdata[PIN_SELECT_BITS-1:0];
                 ADDR_INPUT_SELECT:    reg_input_select       <= sys_wdata[1:0];
                 ADDR_STREAM_CONTROL: begin
-                    // Level-sensitive enable, pulse on bit1 for reset
+                    // Level-sensitive enable, pulse on bit1 for reset, bit2 marker enable
                     reg_stream_enable    <= sys_wdata[0];
+                    reg_marker_enable    <= sys_wdata[2];
                     if (sys_wdata[1])    reg_stream_reset_cmd <= 1'b1;
                 end
                 default: ;
@@ -490,6 +449,42 @@ always @(posedge clk) begin
 end
 
 //-----------------------------------------------------------------------------
+// External position-trigger edge detection (KDC101 -> expansion inputs)
+//-----------------------------------------------------------------------------
+// Two-FF synchronizers + rising-edge detect + per-axis holdoff. The KDC pulses
+// are long (~10-100 us = thousands of 8 ns cycles) relative to the holdoff, so a
+// single clean event is registered per encoder position. The holdoff rejects
+// level-shifter ringing / contact bounce on the active edge. Detection runs
+// continuously; the captured pulse is only consumed when marker mode is enabled.
+localparam [15:0] MARKER_HOLDOFF = 16'd1250; // ~10 us at 125 MHz
+
+reg        x_trig_s0, x_trig_s1, x_trig_s2;
+reg        y_trig_s0, y_trig_s1, y_trig_s2;
+reg [15:0] x_holdoff_cnt, y_holdoff_cnt;
+
+wire x_edge  = x_trig_s1 & ~x_trig_s2;   // synchronized rising edge
+wire y_edge  = y_trig_s1 & ~y_trig_s2;
+wire x_pulse = x_edge & (x_holdoff_cnt == 16'd0);
+wire y_pulse = y_edge & (y_holdoff_cnt == 16'd0);
+
+always @(posedge clk) begin
+    if (!rstn) begin
+        x_trig_s0 <= 1'b0; x_trig_s1 <= 1'b0; x_trig_s2 <= 1'b0;
+        y_trig_s0 <= 1'b0; y_trig_s1 <= 1'b0; y_trig_s2 <= 1'b0;
+        x_holdoff_cnt <= 16'd0; y_holdoff_cnt <= 16'd0;
+    end else begin
+        x_trig_s0 <= x_pos_trig_i; x_trig_s1 <= x_trig_s0; x_trig_s2 <= x_trig_s1;
+        y_trig_s0 <= y_pos_trig_i; y_trig_s1 <= y_trig_s0; y_trig_s2 <= y_trig_s1;
+
+        if (x_pulse)                      x_holdoff_cnt <= MARKER_HOLDOFF;
+        else if (x_holdoff_cnt != 16'd0)  x_holdoff_cnt <= x_holdoff_cnt - 16'd1;
+
+        if (y_pulse)                      y_holdoff_cnt <= MARKER_HOLDOFF;
+        else if (y_holdoff_cnt != 16'd0)  y_holdoff_cnt <= y_holdoff_cnt - 16'd1;
+    end
+end
+
+//-----------------------------------------------------------------------------
 // Counters and Accumulator Logic
 //-----------------------------------------------------------------------------
 always @(posedge clk) begin
@@ -505,6 +500,11 @@ always @(posedge clk) begin
     reg_stream_active   <= 1'b0;
     reg_stream_wr_ptr   <= {BRAM_ADDR_BITS{1'b0}};
     reg_stream_sample_cnt <= 32'b0;
+    // Marker state
+    reg_marker_x_wr_ptr <= {BRAM_ADDR_BITS{1'b0}};
+    reg_marker_x_count  <= 32'b0;
+    reg_marker_y_wr_ptr <= {BRAM_ADDR_BITS{1'b0}};
+    reg_marker_y_count  <= 32'b0;
     end else begin
         // Reset conditions
         if (current_state == S_IDLE) begin // Reset counters when idle
@@ -565,11 +565,15 @@ always @(posedge clk) begin
         // ------------------------------------------------------------------
         // Streaming engine (demodulated input -> ring buffer in data3 BRAM)
         // ------------------------------------------------------------------
-        // Reset streaming engine
+        // Reset streaming engine (also clears the position-marker rings)
         if (reg_stream_reset_cmd || !reg_stream_enable) begin
             reg_stream_active     <= 1'b0;
             reg_stream_wr_ptr     <= {BRAM_ADDR_BITS{1'b0}};
             reg_stream_sample_cnt <= 32'b0;
+            reg_marker_x_wr_ptr   <= {BRAM_ADDR_BITS{1'b0}};
+            reg_marker_x_count    <= 32'b0;
+            reg_marker_y_wr_ptr   <= {BRAM_ADDR_BITS{1'b0}};
+            reg_marker_y_count    <= 32'b0;
         end else if (reg_stream_enable) begin
             reg_stream_active <= 1'b1;
             // Support demodulated input and FTW correction streaming
@@ -581,6 +585,22 @@ always @(posedge clk) begin
                 // Increment pointer and sample counter for FTW correction streaming
                 reg_stream_wr_ptr <= reg_stream_wr_ptr + 1'b1;
                 reg_stream_sample_cnt <= reg_stream_sample_cnt + 1'b1;
+            end
+
+            // Position-marker capture: on each external position pulse, record the
+            // current demod sample index (reg_stream_sample_cnt) into the x/y marker
+            // ring (write itself handled in the unified BRAM write block below). The
+            // pre-increment pointer/count values are used so they stay aligned with
+            // the write address, which also uses the pre-increment pointer.
+            if (reg_marker_enable) begin
+                if (x_pulse) begin
+                    reg_marker_x_wr_ptr <= reg_marker_x_wr_ptr + 1'b1;
+                    reg_marker_x_count  <= reg_marker_x_count + 1'b1;
+                end
+                if (y_pulse) begin
+                    reg_marker_y_wr_ptr <= reg_marker_y_wr_ptr + 1'b1;
+                    reg_marker_y_count  <= reg_marker_y_count + 1'b1;
+                end
             end
         end
     end
@@ -627,6 +647,21 @@ reg                       data3_we_mux;
 reg [BRAM_ADDR_BITS-1:0]  data3_waddr_mux;
 reg [BUS_DATA_WIDTH-1:0]  data3_wdata_mux;
 
+// Muxed write controls for LSB/MSB BRAM (single-port write template).
+// CRITICAL for block-RAM inference: each array must be written by EXACTLY ONE
+// clocked statement with ONE address source. Writing ram_lsb/ram_msb directly
+// from two different address signals (marker pointer vs. scan step counter) makes
+// Vivado infer two write ports, which a simple-dual-port BRAM cannot provide, so
+// it silently falls back to distributed RAM (LUTRAM) and replicates it -> ~17k
+// LUTRAMs, over-utilizing the xc7z010. Pre-muxing here (identical to the data3
+// template) keeps both arrays in block RAM.
+reg                       lsb_we_mux;
+reg [BRAM_ADDR_BITS-1:0]  lsb_waddr_mux;
+reg [BUS_DATA_WIDTH-1:0]  lsb_wdata_mux;
+reg                       msb_we_mux;
+reg [BRAM_ADDR_BITS-1:0]  msb_waddr_mux;
+reg [BUS_DATA_WIDTH-1:0]  msb_wdata_mux;
+
 always @(*) begin
     // Default no write
     data3_we_mux    = 1'b0;
@@ -645,16 +680,44 @@ always @(*) begin
     end
 end
 
+// LSB/MSB arrays are dual-purpose:
+//  - scan mode: lower/upper 32 bits of the 64-bit accumulator (scan FSM)
+//  - marker-stream mode: x markers in ram_lsb, y markers in ram_msb.
+// The two are mutually exclusive (marker mode only runs while streaming, when the
+// scan FSM is idle and bram_wr_en is low), so a simple priority mux is correct.
+// Marker mode takes precedence, matching the original if/else ordering.
+always @(*) begin
+    // Default no write
+    lsb_we_mux    = 1'b0;
+    lsb_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
+    lsb_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
+    msb_we_mux    = 1'b0;
+    msb_waddr_mux = {BRAM_ADDR_BITS{1'b0}};
+    msb_wdata_mux = {BUS_DATA_WIDTH{1'b0}};
+    if (reg_marker_enable && reg_stream_enable) begin
+        // Marker mode: x -> ram_lsb, y -> ram_msb (independent per-axis writes)
+        lsb_we_mux    = x_pulse;
+        lsb_waddr_mux = reg_marker_x_wr_ptr;
+        lsb_wdata_mux = reg_stream_sample_cnt;
+        msb_we_mux    = y_pulse;
+        msb_waddr_mux = reg_marker_y_wr_ptr;
+        msb_wdata_mux = reg_stream_sample_cnt;
+    end else if (bram_wr_en) begin
+        // Scan mode: lower/upper 32 bits of the accumulator at the step address
+        lsb_we_mux    = 1'b1;
+        lsb_waddr_mux = bram_wr_addr;
+        lsb_wdata_mux = bram_wr_data_lsb;
+        msb_we_mux    = 1'b1;
+        msb_waddr_mux = bram_wr_addr;
+        msb_wdata_mux = bram_wr_data_msb;
+    end
+end
+
 always @(posedge clk) begin
-    // LSB/MSB arrays written only by scan FSM
-    if (bram_wr_en) begin
-        ram_lsb[bram_wr_addr] <= bram_wr_data_lsb;
-        ram_msb[bram_wr_addr] <= bram_wr_data_msb;
-    end
-    // Data3 array uses muxed single-port write style (scan or stream)
-    if (data3_we_mux) begin
-        ram_data3[data3_waddr_mux] <= data3_wdata_mux;
-    end
+    // Each array: exactly one write statement, one muxed address -> block RAM.
+    if (lsb_we_mux)   ram_lsb[lsb_waddr_mux]     <= lsb_wdata_mux;
+    if (msb_we_mux)   ram_msb[msb_waddr_mux]     <= msb_wdata_mux;
+    if (data3_we_mux) ram_data3[data3_waddr_mux] <= data3_wdata_mux;
 end
 
 // Generate Write Enable signal from State Machine
@@ -741,62 +804,70 @@ end
 assign bram_read_ack_delayed = bram_ack_delay_pipe[3];
 
 //-----------------------------------------------------------------------------
-// System Bus Interface Logic
+// System Bus Interface Logic (read data + acknowledge)
+//-----------------------------------------------------------------------------
+// ROBUSTNESS FIX (2026-06-08): single registered case on the *current* bus
+// address selects both sys_ack and sys_rdata, mirroring the proven
+// red_pitaya_scope.v pattern (registers ack on sys_en, BRAM banks ack on a
+// delayed valid).
+//
+// The previous version used three overlapping if-blocks (immediate register
+// ack, a BRAM ack gated by the *lingering* is_bram_access_p3 pipeline, and a
+// write ack) that all assigned the single sys_ack register with last-wins
+// precedence. After a BRAM read the is_bram_access_p3 pipeline stays asserted
+// for several drain cycles; if a register read was issued in that shadow -
+// exactly what happens when the ARM push-stream server continuously reads the
+// data3 BRAM while the PC interleaves marker/register reads - the stale BRAM
+// block overrode the register read's ack. The CPU read then got no AXI
+// acknowledge and faulted with an "external abort" (SIGBUS), intermittently
+// killing the register server only during push streaming and only on this
+// module. Selecting the ack source from the current address (held by the bus
+// for the whole transaction) guarantees exactly one ack per transaction, so a
+// lingering BRAM-pipeline signal can no longer suppress a following access.
+//
+// Reuses the existing read pipeline unchanged: registers are combinational from
+// their holding regs (immediate ack via sys_en); the three BRAM banks present
+// bram_rd_data_*_reg with the existing 4-cycle delayed ack (bram_read_ack_delayed).
+// BRAM-range *writes* never occur from the CPU but are acked immediately for
+// safety so no transaction can ever hang the bus.
 //-----------------------------------------------------------------------------
 always @(posedge clk) begin
     if (!rstn) begin
-        sys_ack <= 1'b0;
+        sys_ack   <= 1'b0;
         sys_rdata <= 32'h0;
-        sys_err <= 1'b0;
+        sys_err   <= 1'b0;
     end else begin
-        // Default assignments (will be overridden below if conditions match)
-        sys_ack <= 1'b0;
         sys_err <= 1'b0;
-        sys_rdata <= 32'h0; // Default to 0 if no valid read target
+        casez (reg_addr)
+            // ---- configuration / status / stream / marker registers ----
+            // immediate ack (1 cycle); rdata valid the same cycle as the ack.
+            ADDR_STATUS:          begin sys_ack <= sys_en; sys_rdata <= { {32-2{1'b0}}, reg_done_flag, reg_busy_flag }; end
+            ADDR_NUM_STEPS:       begin sys_ack <= sys_en; sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_num_steps }; end
+            ADDR_DWELL_TIME:      begin sys_ack <= sys_en; sys_rdata <= reg_dwell_time; end
+            ADDR_SETTLING_TIME:   begin sys_ack <= sys_en; sys_rdata <= reg_settling_time; end
+            ADDR_TRIGGER_LENGTH:  begin sys_ack <= sys_en; sys_rdata <= reg_trigger_length; end
+            ADDR_TRIGGER_PIN_SEL: begin sys_ack <= sys_en; sys_rdata <= { {(32-PIN_SELECT_BITS){1'b0}}, reg_trigger_pin_select }; end
+            ADDR_CURRENT_STEP:    begin sys_ack <= sys_en; sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_current_step }; end
+            ADDR_INPUT_SELECT:    begin sys_ack <= sys_en; sys_rdata <= { {30{1'b0}}, reg_input_select }; end
+            ADDR_STREAM_CONTROL:  begin sys_ack <= sys_en; sys_rdata <= {29'b0, reg_marker_enable, reg_stream_reset_cmd, reg_stream_enable}; end
+            ADDR_STREAM_STATUS:   begin sys_ack <= sys_en; sys_rdata <= {31'b0, reg_stream_active}; end
+            ADDR_STREAM_WR_PTR:   begin sys_ack <= sys_en; sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_stream_wr_ptr }; end
+            ADDR_STREAM_SAMPLES:  begin sys_ack <= sys_en; sys_rdata <= reg_stream_sample_cnt; end
+            ADDR_MARKER_X_WR_PTR: begin sys_ack <= sys_en; sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_marker_x_wr_ptr }; end
+            ADDR_MARKER_X_COUNT:  begin sys_ack <= sys_en; sys_rdata <= reg_marker_x_count; end
+            ADDR_MARKER_Y_WR_PTR: begin sys_ack <= sys_en; sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_marker_y_wr_ptr }; end
+            ADDR_MARKER_Y_COUNT:  begin sys_ack <= sys_en; sys_rdata <= reg_marker_y_count; end
 
-        // Handle Register Accesses (Immediate Ack, Registered Data)
-        if (sys_en && !is_bram_access) begin // Active and NOT a BRAM access
-            sys_ack <= 1'b1; // Immediate ack for registers
-            if (sys_ren) begin // Only update rdata on read
-                case (reg_addr) // Use current address for decoding
-                    ADDR_STATUS:          sys_rdata <= { {32-2{1'b0}}, reg_done_flag, reg_busy_flag };
-                    ADDR_NUM_STEPS:       sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_num_steps };
-                    ADDR_DWELL_TIME:      sys_rdata <= reg_dwell_time;
-                    ADDR_SETTLING_TIME:   sys_rdata <= reg_settling_time;
-                    ADDR_TRIGGER_LENGTH:  sys_rdata <= reg_trigger_length;
-                    ADDR_TRIGGER_PIN_SEL: sys_rdata <= { {(32-PIN_SELECT_BITS){1'b0}}, reg_trigger_pin_select };
-                    ADDR_CURRENT_STEP:    sys_rdata <= { {(32-MAX_STEPS_BITS){1'b0}}, reg_current_step };
-                    ADDR_INPUT_SELECT:    sys_rdata <= { {30{1'b0}}, reg_input_select };
-                    ADDR_STREAM_CONTROL:  sys_rdata <= {30'b0, reg_stream_reset_cmd, reg_stream_enable}; // TODO: maybe group more reads into one read for time-critical tasks. Performance vs readability
-                    ADDR_STREAM_STATUS:   sys_rdata <= {31'b0, reg_stream_active};
-                    ADDR_STREAM_WR_PTR:   sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_stream_wr_ptr };
-                    ADDR_STREAM_SAMPLES:  sys_rdata <= reg_stream_sample_cnt;
-                    default:              sys_rdata <= 32'hBADADD05; // Bad register address
+            // ---- BRAM banks (offsets 0x10000/0x20000/0x30000 -> addr[19:16]=1/2/3) ----
+            // delayed ack aligned with the 4-cycle read pipeline; writes (never
+            // issued by the CPU) ack immediately so they can't hang the bus.
+            20'h1????:            begin sys_ack <= (sys_wen ? 1'b1 : bram_read_ack_delayed); sys_rdata <= bram_rd_data_lsb_reg; end
+            20'h2????:            begin sys_ack <= (sys_wen ? 1'b1 : bram_read_ack_delayed); sys_rdata <= bram_rd_data_msb_reg; end
+            20'h3????:            begin sys_ack <= (sys_wen ? 1'b1 : bram_read_ack_delayed); sys_rdata <= bram_rd_data_data3_reg; end
+
+            // unmapped register address: still ack so the bus never hangs.
+            default:              begin sys_ack <= sys_en; sys_rdata <= 32'h0; end
         endcase
-            end else begin
-                 sys_rdata <= 32'h0; // Don't drive data bus during register write
-            end
-        end
-
-        // Handle BRAM Read Data/Ack Output (Delayed & Registered)
-        // Gated by is_bram_access_p3 to ensure data pipeline is complete
-        if (is_bram_access_p3) begin
-            sys_ack <= bram_read_ack_delayed; // Use delayed acknowledge (4 cycles)
-            case (select_bram_for_rdata_p3) // Use delayed select (3 cycles)
-                2'b00: sys_rdata <= bram_rd_data_lsb_reg;   // LSB
-                2'b01: sys_rdata <= bram_rd_data_msb_reg;   // MSB
-                2'b10: sys_rdata <= bram_rd_data_data3_reg; // Data3
-                default: sys_rdata <= 32'h0;
-            endcase
-        end
-
-        // Handle Write Acknowledge (Immediate) - Overrides BRAM ack if concurrent
-        if (sys_wen) begin
-             sys_ack <= 1'b1;
-             // Note: If sys_wen is asserted in the same cycle is_bram_access_p3 becomes true,
-             // the immediate write ack takes precedence over the delayed read ack.
-             // This is typical for simple AXI-lite implementations.
-        end
     end
 end
 

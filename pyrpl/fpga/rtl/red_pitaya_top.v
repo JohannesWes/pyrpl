@@ -722,6 +722,14 @@ scan #(
     .ftw_correction_i (ftw_correction),           // From ODMR freq lock
     .ftw_correction_valid_i (ftw_correction_valid),
 
+    // External KDC101 position-step triggers (5V->3.3V level-shifted into free
+    // expansion-P inputs). DIO7_P (exp_p_in[7]) carries the MW trigger out, so the
+    // position inputs use DIO5_P / DIO6_P. NOTE: keep exp_p_src_sel[5:6]=0 (input)
+    // in the housekeeping module so these pins are not driven by dac_pwm_o[3]
+    // (the only module-source overlap, on DIO5_P).
+    .x_pos_trig_i  (exp_p_in[5]),                 // DIO5_P: x-axis position pulses
+    .y_pos_trig_i  (exp_p_in[6]),                 // DIO6_P: y-axis position pulses
+
     // Trigger Output
     .trigger_o     (scan_trigger_o),
 

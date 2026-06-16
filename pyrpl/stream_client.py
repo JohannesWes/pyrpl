@@ -59,6 +59,74 @@ SCAN_STREAM_SAMPLES_OFFSET = 0x2C
 SCAN_DATA3_OFFSET = 0x30000
 SCAN_MMAP_SIZE = 0x00100000   # 1 MB covers the module's registers + BRAM banks
 SCAN_RING_DEPTH = 4096
+STREAM_SAMPLE_RATE = 125e6 / 4096   # ~30.517 kHz demod sample rate
+
+# Sanity bound on a single frame's reported ``gap`` (lost-sample count).
+# A legitimate gap is bounded by the ARM-side DRAM ring (default 16 MB ->
+# ~4.2 M samples; even a 64 MB ring is ~16.8 M). Anything far above that is not
+# a real same-session loss but a *counter desync* -- e.g. a second consumer reset
+# the shared FPGA sample counter (STREAM_CONTROL bit1) while this client's
+# server-side drain baseline was mid-history, so ``produced - drained`` underflows
+# and wraps near 2**32. NaN-filling such a "gap" would try to allocate tens of GiB
+# and OOM the process. Above this bound we treat the frame as a fatal desync and
+# stop cleanly instead. 256 M samples (~2.4 h at 30.5 kHz) is comfortably above any
+# legitimate overrun yet far below the 2**31 wrap signature.
+DEFAULT_MAX_GAP = 1 << 28
+
+
+class StreamTap(object):
+    """A secondary, independent read view of a :class:`StreamClient`'s feed.
+
+    The board stream is read by exactly one background thread; every received
+    block is also copied here so a SECOND consumer can read the SAME samples
+    without stealing them from the primary consumer. The intended use is a live
+    time-trace display while a motor scan owns the primary feed.
+
+    Bounded (drop-oldest) because it is a *display* tap: a consumer that stops
+    draining must not grow memory without bound. It duck-types the subset of the
+    StreamClient API that ``RedPitayaDataInStream._drain_rx`` relies on
+    (``read``/``error``/``stats``/``running``), so it can stand in for ``_rx``.
+    """
+
+    def __init__(self, lock, max_samples):
+        self._lock = lock              # shared with the owning StreamClient
+        self._chunks = []
+        self._n = 0
+        self._dropped = 0
+        self._max = max(1, int(max_samples))
+        self._closed = False
+
+    def _append(self, block):
+        """Append a received block. Called by the client thread under ``_lock``."""
+        self._chunks.append(block)
+        self._n += block.size
+        while self._n > self._max and len(self._chunks) > 1:
+            drop = self._chunks.pop(0)
+            self._n -= drop.size
+            self._dropped += drop.size
+
+    def read(self):
+        """Return and clear all samples buffered in this tap (float64)."""
+        with self._lock:
+            if not self._chunks:
+                return np.empty(0, dtype=np.float64)
+            out = np.concatenate(self._chunks)
+            self._chunks = []
+            self._n = 0
+        return out
+
+    @property
+    def error(self):
+        return None
+
+    @property
+    def running(self):
+        return not self._closed
+
+    def stats(self):
+        with self._lock:
+            return dict(n_samples=self._n, n_dropped=self._dropped,
+                        n_gap=0, n_seq_skips=0, tap=True, running=not self._closed)
 
 
 class StreamClient(object):
@@ -99,10 +167,13 @@ class StreamClient(object):
 
     def __init__(self, host, port, addr_base,
                  depth=SCAN_RING_DEPTH, poll_us=200, sndbuf=0, rcvbuf=0,
-                 ring_bytes=0, coalesce_us=0):
+                 ring_bytes=0, coalesce_us=0, max_gap=DEFAULT_MAX_GAP):
         self.host = host
         self.port = int(port)
         self._rcvbuf = rcvbuf
+        # Largest plausible single-frame gap; above this we treat the frame as a
+        # counter desync (see DEFAULT_MAX_GAP) and stop instead of NaN-allocating.
+        self._max_gap = int(max_gap) if max_gap and max_gap > 0 else DEFAULT_MAX_GAP
         self._req = struct.pack(
             "<%dI" % REQUEST_WORDS, REQ_MAGIC,
             addr_base, SCAN_MMAP_SIZE,
@@ -116,6 +187,7 @@ class StreamClient(object):
         self._running = False
         self._lock = threading.Lock()
         self._chunks = []
+        self._taps = []          # secondary read views (e.g. live display fan-out)
         # statistics (read-only for callers)
         self.n_samples = 0       # real samples received
         self.n_gap = 0           # NaN-filled (lost) samples
@@ -196,6 +268,17 @@ class StreamClient(object):
                     continue
                 pieces = []
                 if gap:
+                    if gap > self._max_gap:
+                        # Not a real loss: the shared FPGA sample counter was reset
+                        # under this client (typically a second consumer starting a
+                        # stream on the same board), so the server-reported gap
+                        # underflowed and wrapped near 2**31/2**32. NaN-filling it
+                        # would allocate tens of GiB and OOM. Fail cleanly instead.
+                        raise ValueError(
+                            "implausible stream gap %d (> max_gap %d) -- shared "
+                            "FPGA stream counter desync, likely a concurrent "
+                            "stream start on the same board; stopping receiver "
+                            "instead of NaN-allocating" % (gap, self._max_gap))
                     pieces.append(np.full(gap, np.nan, dtype=np.float64))
                     self.n_gap += gap
                     logger.warning("stream gap: %d samples lost (NaN-filled)", gap)
@@ -206,6 +289,10 @@ class StreamClient(object):
                 block = pieces[0] if len(pieces) == 1 else np.concatenate(pieces)
                 with self._lock:
                     self._chunks.append(block)
+                    # fan-out: copy each block to any secondary read views so a
+                    # live display can read the same samples without stealing them
+                    for tap in self._taps:
+                        tap._append(block)
         except Exception as e:  # noqa: BLE001 - surface unexpected failures
             if self._running:
                 self._err = e
@@ -233,6 +320,28 @@ class StreamClient(object):
         """Number of samples currently buffered (not yet read())."""
         with self._lock:
             return sum(len(c) for c in self._chunks)
+
+    def add_tap(self, max_seconds=10.0):
+        """Register and return a secondary :class:`StreamTap` read view.
+
+        Every block received from here on is also copied into the tap, so a
+        second consumer (e.g. a live time-trace) can read the same samples
+        independently of the primary :meth:`read`. The tap is bounded to
+        ``max_seconds`` of samples (drop-oldest) for display safety.
+        """
+        tap = StreamTap(self._lock, max_seconds * STREAM_SAMPLE_RATE)
+        with self._lock:
+            self._taps.append(tap)
+        return tap
+
+    def remove_tap(self, tap):
+        """Unregister a tap previously returned by :meth:`add_tap`."""
+        if tap is None:
+            return
+        with self._lock:
+            if tap in self._taps:
+                self._taps.remove(tap)
+            tap._closed = True
 
     def stats(self):
         """Return a dict of streaming statistics/counters."""

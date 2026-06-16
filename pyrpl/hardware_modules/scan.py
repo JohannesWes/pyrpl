@@ -2,7 +2,8 @@
 """
 Scan Module for Pyrpl.
 
-This module controls the FPGA scan block, providing two main operating modes:
+This module controls the FPGA scan block, providing three operating
+configurations:
 
 ================================================================================
 1. SCAN MODE - Automated Sweeps with Triggered Acquisition
@@ -40,7 +41,7 @@ The canonical streaming path is now `push_stream_start/read/iter/stats/stop`
 NaN-fills lost samples instead of dropping them silently. The poll-based
 `stream_*` API documented below is **deprecated** (emits a DeprecationWarning)
 and retained only as a zero-dependency fallback (no SSH deploy / no second TCP
-port). See `docs/developer_guide/scan_push_streaming.md`.
+port). See `docs/developer_guide/scan_data_streaming.md`.
 
 **Stream Architecture:**
 *   The FPGA writes 32-bit samples to the data3 BRAM (4096 words) as a circular
@@ -96,7 +97,7 @@ while acquiring:
 *   `push_stream_read()`  - All samples since last call (float64; NaN = lost)
 *   `push_stream_iter()`  - Generator yielding batches until stopped
 *   `push_stream_stats()` - Health counters (n_samples, n_gap, n_seq_skips, ...)
-    See `docs/developer_guide/scan_push_streaming.md` for the full design.
+    See `docs/developer_guide/scan_data_streaming.md` for the full design.
 
 **Stream API Methods (deprecated: poll-based fallback):**
 Retained as a zero-dependency fallback (pure register reads, no SSH deploy / no
@@ -116,11 +117,46 @@ second TCP port). Each emits a DeprecationWarning. Prefer the push API above.
     reading more frequently — i.e. the fragility the push API removes.
 
 ================================================================================
-Input Modes (Both Scan and Stream)
+3. POSITION-MARKER STREAM MODE - Hardware-Synchronized Motor Scans
+================================================================================
+
+This is stream mode with FPGA marker capture enabled. The demod/FTW sample ring
+continues to run in data3 BRAM and is normally drained by the ARM push server,
+while two external KDC101 "At Position Steps" outputs are edge-detected by the
+FPGA:
+
+*   x position pulse: exp_p_in[5] / DIO5_P, fast-axis bin boundaries.
+*   y position pulse: exp_p_in[6] / DIO6_P, slow-axis line boundaries.
+
+On each position pulse the FPGA records the current stream sample counter into a
+marker ring: x markers in the LSB bank, y markers in the MSB bank. Since the
+sample ring and both marker rings share the same free-running sample counter, a
+marker value m means sample[m] is the first stream sample after that spatial
+boundary. The PC can then slice one continuous trace into exact spatial bins and
+lines without USB position timestamps or interpolation.
+
+Use the mapped-stream API for this mode:
+```python
+scan.mapped_stream_start(input_source='demod')  # enables stream + marker capture
+while scanning:
+    demod = scan.mapped_stream_read()
+    x_markers = scan.read_x_markers()
+    y_markers = scan.read_y_markers()
+scan.mapped_stream_stop()
+```
+
+The marker rings are 4096 entries deep and must be drained periodically during
+long rasters. See `docs/developer_guide/motor_position_sync_scan.md` for the
+FPGA/PC reconstruction contract and the qudi-side motor integration.
+
+================================================================================
+Input Modes
 ================================================================================
 *   **adc:** Direct 14-bit ADC input at 125 MHz (scan only)
 *   **iq0:** 24-bit IQ demodulator output at 125 MHz (scan only)
 *   **demod:** 32-bit demodulated lock-in output, valid every 4096 cycles (≈30.5 kHz)
+*   **ftw_corr:** 32-bit FTW correction from the ODMR tracker, valid every 4096
+    cycles (stream and marker-stream modes only)
 
     When using 'demod' mode in scan, the dwell_time still represents the total
     acquisition time in clock cycles, but data is only accumulated when the valid
@@ -130,11 +166,13 @@ Input Modes (Both Scan and Stream)
 ================================================================================
 BRAM Banks (Memory-Mapped Storage)
 ================================================================================
-*   **LSB Bank (0x10000-0x1FFFF):** Lower 32 bits of 64-bit accumulator (scan mode)
-*   **MSB Bank (0x20000-0x2FFFF):** Upper 32 bits of 64-bit accumulator (scan mode)
+*   **LSB Bank (0x10000-0x1FFFF):** Lower 32 bits of 64-bit accumulator (scan
+    mode); x-marker ring in position-marker stream mode
+*   **MSB Bank (0x20000-0x2FFFF):** Upper 32 bits of 64-bit accumulator (scan
+    mode); y-marker ring in position-marker stream mode
 *   **Data3 Bank (0x30000-0x3FFFF):** Dual-purpose 4096 x 32-bit storage
     - Scan mode: Stores sample counts for each step (for accurate averaging)
-    - Stream mode: Ring buffer for continuous demodulated data streaming
+    - Stream/marker-stream mode: Ring buffer for continuous demod/FTW samples
 """
 import time
 import warnings
@@ -165,7 +203,7 @@ def _warn_legacy_stream(method):
     (push_stream_start/read/iter/stats/stop), which moves the real-time deadline
     onto the board and NaN-fills lost samples instead of dropping them silently.
     The poll API is retained as a zero-dependency fallback (no SSH deploy / no
-    second TCP port). See docs/developer_guide/scan_push_streaming.md.
+    second TCP port). See docs/developer_guide/scan_data_streaming.md.
     """
     if method in _LEGACY_STREAM_WARNED:
         return
@@ -174,13 +212,13 @@ def _warn_legacy_stream(method):
         "Scan.{0}() is deprecated: use the push streaming API "
         "(push_stream_start/read/iter/stats/stop) instead. The poll-based "
         "stream_* API is kept only as a zero-dependency fallback. "
-        "See docs/developer_guide/scan_push_streaming.md.".format(method),
+        "See docs/developer_guide/scan_data_streaming.md.".format(method),
         DeprecationWarning,
         stacklevel=3,
     )
     logger.warning(
         "Scan.%s() is deprecated; prefer push_stream_* (see "
-        "docs/developer_guide/scan_push_streaming.md).", method)
+        "docs/developer_guide/scan_data_streaming.md).", method)
 
 
 # Define constants based on scan_new.v
@@ -210,6 +248,11 @@ ADDR_STREAM_CONTROL = 0x20  # bit0 enable, bit1 reset
 ADDR_STREAM_STATUS  = 0x24  # bit0 active, bit1 overflow
 ADDR_STREAM_WR_PTR  = 0x28  # write pointer (index in BRAM)
 ADDR_STREAM_SAMPLES = 0x2C  # total samples written
+# Position-marker streaming (MODE 3): x markers in LSB bank, y markers in MSB bank
+ADDR_MARKER_X_WR_PTR = 0x30  # x-marker ring write pointer (index in LSB BRAM)
+ADDR_MARKER_X_COUNT  = 0x34  # total x markers written since reset
+ADDR_MARKER_Y_WR_PTR = 0x38  # y-marker ring write pointer (index in MSB BRAM)
+ADDR_MARKER_Y_COUNT  = 0x3C  # total y markers written since reset
 BRAM_LSB_BASE_ADDR = 0x10000  # As per Verilog: Module Base + 0x10000
 BRAM_MSB_BASE_ADDR = 0x20000  # As per Verilog: Module Base + 0x20000
 BRAM_DATA3_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000 (sample counts or stream data)
@@ -277,8 +320,8 @@ class Scan(HardwareModule):
     """
     Pyrpl module for controlling the FPGA Scan block.
 
-    Performs automated sweeps, triggering an external device and accumulating
-    input data at each step.
+    Provides triggered step scans, continuous push/poll streaming, and
+    position-marker streaming for hardware-synchronized motor scans.
     """
     _widget_class = ScanWidget
     addr_base = 0x40500000 # Corresponds to system bus port 5
@@ -338,37 +381,74 @@ class Scan(HardwareModule):
                                       "'ftw_corr' for 32-bit FTW correction from ODMR tracker (stream only).")
 
     # ---------------- Streaming (32-bit @ ~31 kHz) ----------------
-    def _stream_ctrl_write(self, enable=None, reset=False):
+    def _stream_ctrl_write(self, enable=None, reset=False, marker=None):
         """Drive the streaming control register (``ADDR_STREAM_CONTROL``).
 
         Register layout (write side):
         - bit 0 (``ENABLE``): 1 = enable streaming; 0 = disable.
         - bit 1 (``RESET``): write-one-to-pulse reset of the stream engine
-        (clears pointers/counters in FPGA). Hardware clears/de-latches it.
+        (clears stream pointers/counters *and* the position-marker rings in the
+        FPGA). Hardware clears/de-latches it.
+        - bit 2 (``MARKER``): 1 = enable position-marker capture (MODE 3); 0 =
+        disable. Markers only matter while streaming is enabled.
 
         Read-modify-write behaviour:
         - If ``enable`` is ``None``, the current enable state (bit 0) is preserved.
         This lets callers issue a reset pulse without unintentionally toggling
         the stream.
         - If ``enable`` is ``True``/``False``, bit 0 is explicitly set/cleared.
+        - If ``marker`` is ``None``, the current marker state (bit 2) is preserved;
+        otherwise bit 2 is explicitly set/cleared.
         - If ``reset`` is ``True``, bit 1 is OR'ed in to request a reset pulse.
 
         Args:
         enable: If ``True`` enable streaming; if ``False`` disable streaming;
         if ``None`` (default) keep the current enable state (bit 0).
         reset: If ``True``, pulse the RESET bit (bit 1). Defaults to ``False``.
+        marker: If ``True`` enable / ``False`` disable marker capture (bit 2);
+        if ``None`` (default) keep the current marker state.
         """
         val = 0
-        if enable is None:
-            # Read-modify-write to preserve current enable state
+        cur = None
+        if enable is None or marker is None:
+            # Read-modify-write to preserve unspecified level bits
             cur = self._read(ADDR_STREAM_CONTROL)
+        if enable is None:
             val |= (cur & 0x1)
         else:
             val |= 0x1 if enable else 0x0
+        if marker is None:
+            val |= (cur & 0x4)
+        else:
+            val |= 0x4 if marker else 0x0
         if reset:
             val |= 0x2
         self._write(ADDR_STREAM_CONTROL, val)
 
+    def _teardown_existing_push_stream(self, context):
+        """Stop a live push/mapped stream client before starting a new one.
+
+        The board exposes a SINGLE stream (one ring, one free-running sample
+        counter selected by ``input_select``). Starting a new push/mapped stream
+        pulses a counter reset and replaces ``self._push_rx``. If a previous
+        client is still running -- e.g. a different qudi module already streaming
+        this board -- silently overwriting it orphans its receive thread and
+        resets the counter out from under it (the server then reports a wrapped,
+        near-2**32 "gap"). Stop it cleanly and warn so the collision is visible
+        rather than corrupting both consumers.
+        """
+        rx = getattr(self, '_push_rx', None)
+        if rx is not None and getattr(rx, 'running', False):
+            logger.warning(
+                "%s: a push stream is already running on this board (input=%s); "
+                "stopping it before starting the new one. The board streams ONE "
+                "quantity at a time -- concurrent stream owners are not supported.",
+                context, getattr(self, '_push_input', '?'))
+            try:
+                rx.stop()
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                logger.exception("%s: error stopping the existing stream client", context)
+        self._push_rx = None
 
     def stream_start(self, input_source="demod"):
         """Enable continuous streaming of demodulated samples or FTW correction into the BRAM ring buffer.
@@ -391,8 +471,8 @@ class Scan(HardwareModule):
             logger.warning("Streaming only supported for 'demod' and 'ftw_corr'. Forcing input_select to 'demod'.")
             input_source = "demod"
         self.input_select = input_source
-        # Reset FPGA streaming engine and enable
-        self._stream_ctrl_write(enable=True, reset=True)
+        # Reset FPGA streaming engine and enable (markers off for plain streaming)
+        self._stream_ctrl_write(enable=True, reset=True, marker=False)
         # Initialize software reader state aligned to current writer
         _, wrp, total_samples = self.stream_status()
         self._stream_rd_ptr = int(wrp)
@@ -576,9 +656,12 @@ class Scan(HardwareModule):
             logger.warning("Push streaming supports 'demod' and 'ftw_corr' only; "
                            "using 'demod'.")
             input_source = "demod"
-        # 1. select input and reset+enable the FPGA stream engine (register path)
+        # 0. ensure no other consumer is mid-stream on this single-stream board
+        self._teardown_existing_push_stream("push_stream_start")
+        # 1. select input and reset+enable the FPGA stream engine (register path);
+        #    markers off for plain push streaming
         self.input_select = input_source
-        self._stream_ctrl_write(enable=True, reset=True)
+        self._stream_ctrl_write(enable=True, reset=True, marker=False)
         # 2. ensure the ARM push-streaming server is up; get its port
         port = self.parent.ensure_stream_server(force_recompile=force_recompile)
         host = self.parent.parameters['hostname']
@@ -622,6 +705,22 @@ class Scan(HardwareModule):
         rx = getattr(self, '_push_rx', None)
         return rx.stats() if rx is not None else {}
 
+    def add_stream_tap(self, max_seconds=10.0):
+        """Return a secondary read view of the live push stream, or None.
+
+        Lets a second consumer (e.g. a live time-trace display) read the SAME
+        samples the primary consumer (e.g. a marker-mode scan) is reading, without
+        stealing them. The tap is bounded (drop-oldest) for display safety.
+        """
+        rx = getattr(self, '_push_rx', None)
+        return rx.add_tap(max_seconds=max_seconds) if rx is not None else None
+
+    def remove_stream_tap(self, tap):
+        """Unregister a tap previously returned by :meth:`add_stream_tap`."""
+        rx = getattr(self, '_push_rx', None)
+        if rx is not None and tap is not None:
+            rx.remove_tap(tap)
+
     def push_stream_stop(self, stop_server=False):
         """Stop the receiver and disable the FPGA stream engine.
 
@@ -635,6 +734,178 @@ class Scan(HardwareModule):
         if stop_server:
             self.parent.stop_stream_server()
         logger.info("Push streaming stopped.")
+
+    # --------- Position-marker streaming (MODE 3: hardware-synced motor scan) ---------
+    # Demod data keeps flowing through the unchanged push-streaming path (data3
+    # ring). In addition, two external KDC101 position-step triggers (one per axis,
+    # level-shifted into exp_p_in[5]/[6] = DIO5_P/DIO6_P) are edge-detected in the FPGA; on each
+    # pulse the current demod sample index is recorded into a marker ring (x in the
+    # LSB bank, y in the MSB bank). Because data and both marker rings share the
+    # same free-running sample counter, a marker value m means demod[m] is the first
+    # sample after that spatial boundary, so the continuous demod trace can be sliced
+    # into exact spatial bins (x) and lines (y) with no software timing guesswork.
+    # See docs/developer_guide/motor_position_sync_scan.md.
+    def mapped_stream_start(self, input_source="demod", poll_us=200,
+                            ring_bytes=0, coalesce_us=0, force_recompile=False):
+        """Start position-marker streaming for hardware-synchronized motor scans.
+
+        Identical to :meth:`push_stream_start` (continuous demod push stream) but
+        additionally enables FPGA marker capture, so :meth:`read_x_markers` /
+        :meth:`read_y_markers` return the demod-sample indices at each axis's
+        encoder position pulses.
+
+        Args:
+            input_source (str): 'demod' or 'ftw_corr'.
+            poll_us, ring_bytes, coalesce_us, force_recompile: see
+                :meth:`push_stream_start`.
+
+        Returns:
+            StreamClient: the background demod receiver.
+        """
+        if input_source not in ("demod", "ftw_corr"):
+            logger.warning("Mapped streaming supports 'demod' and 'ftw_corr' only; "
+                           "using 'demod'.")
+            input_source = "demod"
+        # 0. ensure no other consumer is mid-stream on this single-stream board
+        self._teardown_existing_push_stream("mapped_stream_start")
+        # 1. select input; enable stream + marker capture and reset both (markers
+        #    and the demod ring share one sample counter, reset together).
+        self.input_select = input_source
+        self._stream_ctrl_write(enable=True, reset=True, marker=True)
+        # 2. reset PC-side marker read state (FPGA counters are 0 after the reset)
+        self._marker_x_rd_ptr = 0
+        self._marker_x_total_read = 0
+        self._marker_y_rd_ptr = 0
+        self._marker_y_total_read = 0
+        self._mapped_active = True
+        # 3. start the demod push receiver (same infra as push_stream_start)
+        port = self.parent.ensure_stream_server(force_recompile=force_recompile)
+        host = self.parent.parameters['hostname']
+        self._push_rx = StreamClient(host, port, addr_base=self.addr_base,
+                                     poll_us=poll_us, ring_bytes=ring_bytes,
+                                     coalesce_us=coalesce_us)
+        self._push_rx.start()
+        self._push_input = input_source
+        logger.info("Mapped (marker) streaming started (%s) from %s:%d",
+                    input_source, host, port)
+        return self._push_rx
+
+    def mapped_stream_read(self):
+        """All demod samples received since the last call (see push_stream_read).
+
+        NOTE: marker indices are absolute (from sample 0 at stream start). To use
+        them, accumulate every chunk returned here into one contiguous array whose
+        index 0 is the first sample of the session, then slice with the markers
+        (e.g. via :meth:`slice_by_markers`).
+        """
+        return self.push_stream_read()
+
+    def _read_marker_ring(self, ring_base, wr_ptr, total_written,
+                          rd_ptr_attr, total_read_attr):
+        """Wrap-aware, pointer-tracked read of new markers from one marker ring.
+
+        Mirrors the pointer/overflow bookkeeping of :meth:`stream_read`. Returns the
+        absolute demod-sample indices recorded since the last call (int64,
+        non-negative). On ring overrun (markers produced faster than drained) the
+        lost markers are reported and the reader resyncs to the current writer.
+        """
+        depth = 2 ** MAX_STEPS_BITS
+        total_read = int(getattr(self, total_read_attr, 0))
+        # Overflow: writer advanced by >= depth markers since our last read
+        delta = (int(total_written) - total_read) & 0xFFFFFFFF
+        if delta >= depth:
+            logger.warning("Marker ring overflow (>= %d markers since last read); "
+                           "drained too slowly. Resyncing; some markers lost.", depth)
+            setattr(self, rd_ptr_attr, int(wr_ptr))
+            setattr(self, total_read_attr, int(total_written))
+            return np.array([], dtype=np.int64)
+
+        rd = int(getattr(self, rd_ptr_attr, 0)) % depth
+        avail = (wr_ptr - rd) if wr_ptr >= rd else ((depth - rd) + wr_ptr)
+        if avail == 0:
+            return np.array([], dtype=np.int64)
+
+        first_len = min(avail, depth - rd)
+        segs = []
+        if first_len > 0:
+            segs.append(self._reads(ring_base + rd * 4, first_len))
+        rem = avail - first_len
+        if rem > 0:
+            segs.append(self._reads(ring_base, rem))  # wrapped segment
+
+        if len(segs) > 1:
+            data = np.concatenate([np.asarray(s, dtype=np.uint32) for s in segs])
+        else:
+            data = np.asarray(segs[0], dtype=np.uint32)
+
+        setattr(self, rd_ptr_attr, (rd + avail) % depth)
+        setattr(self, total_read_attr, total_read + avail)
+        return data.astype(np.int64)
+
+    def read_x_markers(self):
+        """Return new x-axis (fast-axis) marker sample-indices since the last call.
+
+        Returns:
+            np.ndarray int64 of absolute demod-sample indices, one per x position
+            pulse. Empty if not mapped-streaming or no new markers.
+        """
+        if not getattr(self, '_mapped_active', False):
+            return np.array([], dtype=np.int64)
+        # bulk read wr_ptr (0x30) and count (0x34)
+        vals = self._reads(ADDR_MARKER_X_WR_PTR, 2)
+        return self._read_marker_ring(BRAM_LSB_BASE_ADDR, int(vals[0]), int(vals[1]),
+                                      '_marker_x_rd_ptr', '_marker_x_total_read')
+
+    def read_y_markers(self):
+        """Return new y-axis (slow-axis) marker sample-indices since the last call.
+
+        Returns:
+            np.ndarray int64 of absolute demod-sample indices, one per y position
+            pulse (i.e. one per scan line). Empty if not mapped-streaming or no new
+            markers.
+        """
+        if not getattr(self, '_mapped_active', False):
+            return np.array([], dtype=np.int64)
+        # bulk read wr_ptr (0x38) and count (0x3C)
+        vals = self._reads(ADDR_MARKER_Y_WR_PTR, 2)
+        return self._read_marker_ring(BRAM_MSB_BASE_ADDR, int(vals[0]), int(vals[1]),
+                                      '_marker_y_rd_ptr', '_marker_y_total_read')
+
+    def mapped_stream_stop(self, stop_server=False):
+        """Stop the demod receiver and disable streaming + marker capture."""
+        rx = getattr(self, '_push_rx', None)
+        if rx is not None:
+            rx.stop()
+        self._stream_ctrl_write(enable=False, marker=False)
+        self._mapped_active = False
+        if stop_server:
+            self.parent.stop_stream_server()
+        logger.info("Mapped (marker) streaming stopped.")
+
+    @staticmethod
+    def slice_by_markers(demod, markers):
+        """Slice a contiguous demod array into per-bin segments at marker indices.
+
+        Args:
+            demod (np.ndarray): the full demod trace whose index 0 is the first
+                sample of the streaming session (concatenate every
+                :meth:`mapped_stream_read` chunk).
+            markers (array-like): absolute sample indices (e.g. from
+                :meth:`read_x_markers`). N markers define N-1 bins between
+                consecutive markers; samples before the first / after the last
+                marker are not part of any bin.
+
+        Returns:
+            list[np.ndarray]: the demod samples in each bin, in marker order.
+        """
+        m = np.asarray(markers, dtype=np.int64)
+        n = demod.shape[0] if hasattr(demod, 'shape') else len(demod)
+        bins = []
+        for i in range(len(m) - 1):
+            a = max(0, int(m[i]))
+            b = min(n, int(m[i + 1]))
+            bins.append(demod[a:b])
+        return bins
 
     def ftw_to_hz(self, ftw_values):
         """Convert raw FTW (Frequency Tuning Word) values to Hz.
