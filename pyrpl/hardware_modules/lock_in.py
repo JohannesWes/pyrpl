@@ -2,17 +2,15 @@
 Dual-channel lock-in demodulation module.
 
 The lock-in module performs synchronous demodulation of an ADC input signal
-with two independent reference signals from the IQ0 module. Each channel
-multiplies the shared input signal with its selected reference, then performs
-CIC decimation (by 4096) and FIR lowpass filtering to extract the DC component.
+with two reference signals. Each channel multiplies the input signal with
+its selected reference, then performs CIC decimation (by 4096) and FIR
+lowpass filtering to extract the DC component.
 
 Each channel's reference signal can be independently selected from four options:
-- sin: Normal sine from IQ0
-- cos: Normal cosine from IQ0
-- sin_shifted: Phase-shifted sine from IQ0
-- cos_shifted: Phase-shifted cosine from IQ0
-
-The 1f vs 2f frequency is controlled separately via IQ0's demodulation_at_2f flags.
+- sin: Normal sine
+- cos: Normal cosine
+- sin_shifted: Phase-shifted sine
+- cos_shifted: Phase-shifted cosine
 
 Typical usage for I/Q demodulation:
 - Channel 1: ref_select1 = 'sin' (in-phase component)
@@ -27,12 +25,12 @@ class LockIn(HardwareModule):
     """
     Dual-channel lock-in demodulation module with independently selectable reference signals.
 
-    This module demodulates the ADC input (channel A) with two independent reference signals
-    from the IQ0 module. Both channels share the same input but can use different references.
+    This module demodulates the ADC input (channel A) with two independent reference signals.
+    Both channels share the same data input but can use different references.
     Each output is independently decimated and lowpass filtered.
     """
 
-    addr_base = 0x40700000
+    addr_base = 0x40700000 # Top-Level Region 7
 
     _setup_attributes = ['ref_select1', 'ref_select2', 'fir_bypass_ch1', 'fir_bypass_ch2',
                          'filter_select_ch1', 'filter_select_ch2',
@@ -47,9 +45,7 @@ class LockIn(HardwareModule):
                                          'sin_shifted': 2,
                                          'cos_shifted': 3},
                                  default='sin',
-                                 doc="Channel 1 reference signal selection from IQ0 module. "
-                                     "Choose which IQ0 output to use for demodulation. "
-                                     "Use IQ0's demodulation_at_2f flags to control 1f vs 2f.")
+                                 doc="Channel 1 reference signal selection.")
 
     # Reference signal selection for channel 2 (bits 3:2 of address 0x000)
     ref_select2 = SelectRegister(0x000,
@@ -59,27 +55,19 @@ class LockIn(HardwareModule):
                                          'sin_shifted': 2 << 2,
                                          'cos_shifted': 3 << 2},
                                  default='cos',
-                                 doc="Channel 2 reference signal selection from IQ0 module. "
-                                     "Choose which IQ0 output to use for demodulation. "
-                                     "Use IQ0's demodulation_at_2f flags to control 1f vs 2f.")
+                                 doc="Channel 2 reference signal selection.")
 
     # FIR bypass control for channel 1 (bit 4 of address 0x000)
     fir_bypass_ch1 = BoolRegister(0x000,
                                   bit=4,
                                   default=False,
-                                  doc="Bypass FIR lowpass filter for channel 1. "
-                                      "When True: bandwidth ~15 kHz (CIC only), latency ~160 µs. "
-                                      "When False: bandwidth determined by filter_select_ch1 (CIC+FIR). "
-                                      "Bypassing the FIR reduces latency for fast control loops.")
+                                  doc="Bypass FIR lowpass filter for channel 1.")
 
     # FIR bypass control for channel 2 (bit 5 of address 0x000)
     fir_bypass_ch2 = BoolRegister(0x000,
                                   bit=5,
                                   default=False,
-                                  doc="Bypass FIR lowpass filter for channel 2. "
-                                      "When True: bandwidth ~15 kHz (CIC only), latency ~160 µs. "
-                                      "When False: bandwidth determined by filter_select_ch2 (CIC+FIR). "
-                                      "Bypassing the FIR reduces latency for fast control loops.")
+                                  doc="Bypass FIR lowpass filter for channel 2.")
 
     # Filter selection for channel 1 (bits 7:6 of address 0x000)
     filter_select_ch1 = SelectRegister(0x000,
@@ -88,8 +76,8 @@ class LockIn(HardwareModule):
                                                 '2kHz': 1 << 6,
                                                 '5kHz': 2 << 6},
                                        default='2kHz',
-                                       doc="Channel 1 lowpass filter selection (active when fir_bypass_ch1 is False). "
-                                           "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                       doc="Channel 1 lowpass filter selection."
+                                           "500Hz: Bandwidth 500 Hz (CIC+FIR) "
                                            "2kHz: Bandwidth 2 kHz (CIC+FIR). "
                                            "5kHz: Bandwidth 5 kHz (CIC+FIR).")
 
@@ -100,8 +88,8 @@ class LockIn(HardwareModule):
                                                 '2kHz': 1 << 8,
                                                 '5kHz': 2 << 8},
                                        default='2kHz',
-                                       doc="Channel 2 lowpass filter selection (active when fir_bypass_ch2 is False). "
-                                           "500Hz: Bandwidth 500 Hz (CIC+FIR), latency ~9 ms. "
+                                       doc="Channel 2 lowpass filter selection. "
+                                           "500Hz: Bandwidth 500 Hz (CIC+FIR)"
                                            "2kHz: Bandwidth 2 kHz (CIC+FIR). "
                                            "5kHz: Bandwidth 5 kHz (CIC+FIR).")
 
@@ -109,7 +97,7 @@ class LockIn(HardwareModule):
     demod_bypass_ch1 = BoolRegister(0x000,
                                      bit=10,
                                      default=False,
-                                     doc="Bypass demodulation for channel 1 (DC ODMR mode). "
+                                     doc="Bypass demodulation for channel 1"
                                          "When True: reference signal replaced by fixed constant, "
                                          "ADC passes through CIC/FIR as a lowpass decimation filter "
                                          "without frequency mixing. Same gain scaling as demodulated path. "
@@ -119,7 +107,7 @@ class LockIn(HardwareModule):
     demod_bypass_ch2 = BoolRegister(0x000,
                                      bit=11,
                                      default=False,
-                                     doc="Bypass demodulation for channel 2 (DC ODMR mode). "
+                                     doc="Bypass demodulation for channel 2"
                                          "When True: reference signal replaced by fixed constant, "
                                          "ADC passes through CIC/FIR as a lowpass decimation filter "
                                          "without frequency mixing. Same gain scaling as demodulated path. "
@@ -132,6 +120,7 @@ class LockIn(HardwareModule):
         """
         pass
 
+    # TODO: possibly not used anymore / was used for old single resonance tracking mode. Check before removing
     def get_iq_reference_info(self, channel=1):
         """
         Get information about which IQ0 reference signal is currently selected
@@ -174,3 +163,9 @@ class LockIn(HardwareModule):
             'iq0_frequency': iq0.frequency,
             'demodulation_frequency': iq0.frequency * (2 if at_2f else 1)
         }
+
+
+class LockIn1(LockIn):
+    """Second lock-in instance. Identical to :class:`LockIn` but mapped to System Bus Region 10.
+    """
+    addr_base = 0x40A00000  # Top-Level Region 10

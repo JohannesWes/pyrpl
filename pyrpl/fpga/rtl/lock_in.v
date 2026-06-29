@@ -6,6 +6,9 @@ module lock_in #(
     input wire                          clk_i,
     input wire                          rstn_i,
 
+    // Clock-enable / freeze gate for CIC and FIR chain
+    input wire                          aclken_i,
+
     input wire signed [DATA_WIDTH-1:0]  adc_input_i,
     input wire signed [LUTBITS-1:0]     ref_signal_sin_i,
     input wire signed [LUTBITS-1:0]     ref_signal_cos_i,
@@ -115,6 +118,7 @@ assign decimator_output2_32bit = decimator_output2[39:8];
 // CIC decimator instance - Channel 1
 cic_decimate_by_4096 cic_decimate_instance_ch1 (
   .aclk(clk_i),                                  // input wire aclk
+  .aclken(aclken_i),                             // input wire aclken (freeze gate)
   .s_axis_data_tdata(product_adc_ref_32_bit1),   // input wire [31 : 0] s_axis_data_tdata.
   .s_axis_data_tvalid(1'b1),                     // input wire s_axis_data_tvalid
   .s_axis_data_tready(),                         // output wire s_axis_data_tready
@@ -125,6 +129,7 @@ cic_decimate_by_4096 cic_decimate_instance_ch1 (
 // CIC decimator instance - Channel 2
 cic_decimate_by_4096 cic_decimate_instance_ch2 (
   .aclk(clk_i),                                  // input wire aclk
+  .aclken(aclken_i),                             // input wire aclken (freeze gate)
   .s_axis_data_tdata(product_adc_ref_32_bit2),   // input wire [31 : 0] s_axis_data_tdata.
   .s_axis_data_tvalid(1'b1),                     // input wire s_axis_data_tvalid
   .s_axis_data_tready(),                         // output wire s_axis_data_tready
@@ -133,44 +138,15 @@ cic_decimate_by_4096 cic_decimate_instance_ch2 (
 );
 
 // FIR lowpass outputs
-wire signed [31:0]  fir_500Hz_output1;
-wire signed [31:0]  fir_500Hz_output2;
-wire                fir_500Hz_valid1;
-wire                fir_500Hz_valid2;
-
 wire signed [31:0]  fir_2kHz_output1;
 wire signed [31:0]  fir_2kHz_output2;
 wire                fir_2kHz_valid1;
 wire                fir_2kHz_valid2;
 
-wire signed [31:0]  fir_5kHz_output1;
-wire signed [31:0]  fir_5kHz_output2;
-wire                fir_5kHz_valid1;
-wire                fir_5kHz_valid2;
-
-// FIR lowpass 500Hz instance - Channel 1
-fir_lowpass_500Hz fir_lowpass_500Hz_inst_ch1 (
-  .aclk(clk_i),                                  // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid1),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                         // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output1),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_500Hz_valid1),         // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_500Hz_output1)          // output wire [31 : 0] m_axis_data_tdata
-);
-
-// FIR lowpass 500Hz instance - Channel 2
-fir_lowpass_500Hz fir_lowpass_500Hz_inst_ch2 (
-  .aclk(clk_i),                                  // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid2),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                         // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_500Hz_valid2),         // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_500Hz_output2)          // output wire [31 : 0] m_axis_data_tdata
-);
-
 // FIR lowpass 2000Hz instance - Channel 1
 fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch1 (
   .aclk(clk_i),                                  // input wire aclk
+  .aclken(aclken_i),                             // input wire aclken (freeze gate)
   .s_axis_data_tvalid(dec_m_axis_data_tvalid1),  // input wire s_axis_data_tvalid
   .s_axis_data_tready(),                         // output wire s_axis_data_tready
   .s_axis_data_tdata(decimator_output1),         // input wire [39 : 0] s_axis_data_tdata
@@ -181,6 +157,7 @@ fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch1 (
 // FIR lowpass 2000Hz instance - Channel 2
 fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch2 (
   .aclk(clk_i),                                  // input wire aclk
+  .aclken(aclken_i),                             // input wire aclken (freeze gate)
   .s_axis_data_tvalid(dec_m_axis_data_tvalid2),  // input wire s_axis_data_tvalid
   .s_axis_data_tready(),                         // output wire s_axis_data_tready
   .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
@@ -188,84 +165,16 @@ fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch2 (
   .m_axis_data_tdata(fir_2kHz_output2)           // output wire [31 : 0] m_axis_data_tdata
 );
 
-// FIR lowpass 5000Hz instance - Channel 1
-fir_lowpass_5000Hz fir_lowpass_5000Hz_inst_ch1 (
-  .aclk(clk_i),                                  // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid1),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                         // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output1),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_5kHz_valid1),          // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_5kHz_output1)           // output wire [31 : 0] m_axis_data_tdata
-);
-
-// FIR lowpass 5000Hz instance - Channel 2
-fir_lowpass_5000Hz fir_lowpass_5000Hz_inst_ch2 (
-  .aclk(clk_i),                                  // input wire aclk
-  .s_axis_data_tvalid(dec_m_axis_data_tvalid2),  // input wire s_axis_data_tvalid
-  .s_axis_data_tready(),                         // output wire s_axis_data_tready
-  .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_5kHz_valid2),          // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_5kHz_output2)           // output wire [31 : 0] m_axis_data_tdata
-);
-
-// Select between FIR outputs based on filter_select
-reg signed [31:0] fir_mux_out1;
-reg               fir_mux_valid1;
-reg signed [31:0] fir_mux_out2;
-reg               fir_mux_valid2;
-
-always @(*) begin
-    case (filter_select_ch1)
-        2'd0: begin // 500Hz
-            fir_mux_out1 = fir_500Hz_output1;
-            fir_mux_valid1  = fir_500Hz_valid1;
-        end
-        2'd1: begin // 2kHz
-            fir_mux_out1 = fir_2kHz_output1;
-            fir_mux_valid1  = fir_2kHz_valid1;
-        end
-        2'd2: begin // 5kHz
-            fir_mux_out1 = fir_5kHz_output1;
-            fir_mux_valid1  = fir_5kHz_valid1;
-        end
-        default: begin // Default to 500Hz
-            fir_mux_out1 = fir_500Hz_output1;
-            fir_mux_valid1  = fir_500Hz_valid1;
-        end
-    endcase
-end
-
-always @(*) begin
-    case (filter_select_ch2)
-        2'd0: begin // 500Hz
-            fir_mux_out2 = fir_500Hz_output2;
-            fir_mux_valid2  = fir_500Hz_valid2;
-        end
-        2'd1: begin // 2kHz
-            fir_mux_out2 = fir_2kHz_output2;
-            fir_mux_valid2  = fir_2kHz_valid2;
-        end
-        2'd2: begin // 5kHz
-            fir_mux_out2 = fir_5kHz_output2;
-            fir_mux_valid2  = fir_5kHz_valid2;
-        end
-        default: begin // Default to 500Hz
-            fir_mux_out2 = fir_500Hz_output2;
-            fir_mux_valid2  = fir_500Hz_valid2;
-        end
-    endcase
-end
-
-// Select between FIR output and truncated CIC output based on bypass flag
+// Select between the (2 kHz) FIR output and the truncated CIC output (bypass flag)
 wire signed [31:0] selected_output1;
 wire signed [31:0] selected_output2;
 wire               selected_valid1;
 wire               selected_valid2;
 
-assign selected_output1 = fir_bypass_ch1 ? decimator_output1_32bit : fir_mux_out1;
-assign selected_output2 = fir_bypass_ch2 ? decimator_output2_32bit : fir_mux_out2;
-assign selected_valid1  = fir_bypass_ch1 ? dec_m_axis_data_tvalid1 : fir_mux_valid1;
-assign selected_valid2  = fir_bypass_ch2 ? dec_m_axis_data_tvalid2 : fir_mux_valid2;
+assign selected_output1 = fir_bypass_ch1 ? decimator_output1_32bit : fir_2kHz_output1;
+assign selected_output2 = fir_bypass_ch2 ? decimator_output2_32bit : fir_2kHz_output2;
+assign selected_valid1  = fir_bypass_ch1 ? dec_m_axis_data_tvalid1 : fir_2kHz_valid1;
+assign selected_valid2  = fir_bypass_ch2 ? dec_m_axis_data_tvalid2 : fir_2kHz_valid2;
 
 // Output register assignment - Channel 1
 always @(posedge clk_i) begin
@@ -274,7 +183,7 @@ always @(posedge clk_i) begin
         filtered_output1_valid_o <= 1'b0;
     end else begin
         filtered_output1_o <= selected_output1;
-        filtered_output1_valid_o <= selected_valid1;
+        filtered_output1_valid_o <= selected_valid1 & aclken_i;
     end
 end
 
@@ -285,7 +194,7 @@ always @(posedge clk_i) begin
         filtered_output2_valid_o <= 1'b0;
     end else begin
         filtered_output2_o <= selected_output2;
-        filtered_output2_valid_o <= selected_valid2;
+        filtered_output2_valid_o <= selected_valid2 & aclken_i;
     end
 end
 
