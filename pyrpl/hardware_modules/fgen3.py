@@ -3,29 +3,10 @@ Module for controlling the 3-Component FM Sine Generator (Fgen3) FPGA module.
 
 This module generates a signal composed of the sum of three independent,
 potentially frequency-modulated sine waves. It uses memory-efficient
-quarter-sine LUTs. Each component's contribution to DAC A and DAC B
-can have independent phase and amplitude settings, allowing for precise
-I/Q signal generation for applications like SSB mixing.
-
-Key functionalities:
-- Independent control of frequency for 3 components.
-- Independent phase and amplitude for each component's contribution to DAC A.
-- Independent phase and amplitude for each component's contribution to DAC B.
-- Optional frequency modulation (FM) for each component using an external signal.
-- Overall DC offset control for the two DAC outputs.
-
-This module is automatically integrated with the ODMR frequency lock module
-(odmr_freq_lock) to enable real-time resonance tracking in ODMR experiments.
-When the ODMR frequency lock is enabled, it generates a frequency correction
-signal (FTW correction) that is automatically applied to ALL three frequency
-components in this module at the FPGA level. This correction is added to:
-
-    1. Base frequency step for each component (comp_freq_step)
-    2. FM-modulated frequency deltas (when FM is enabled)
-
-For detailed ODMR frequency lock documentation, see:
-    - pyrpl/hardware_modules/odmr_freq_lock.py
-    - docs/developer_guide/odmr_freq_lock_implementation.md
+quarter-sine LUTs. Each component's amplitudes and phases, as well as the
+DC offsets for each DAC output, can be independently controlled for SSB mixing.
+The frequency tuning word can also be externally controlled to enable tracking
+of a resonance frequency (ODMR tracking modules).
 """
 
 from typing import Optional, Union, List, Tuple
@@ -54,6 +35,7 @@ class FgenConstants:
     GAINBITS = 14
     FM_MOD_BITS = 17
     NUM_COMPONENTS = 3
+    NSLOTS = 2  # Number of SSB calibration slots (resonances). Must match red_pitaya_3fgen.v.
     MAX_FREQUENCY_KHZ = 125_000 // 2  # 62.5 MHz
 
 
@@ -62,7 +44,6 @@ class ComponentConfig:
     """Configuration for a single frequency component of the signal generator."""
     enable: bool = True
     frequency: Optional[float] = None
-    phase_offset_a: Optional[float] = None
     amplitude_a: Optional[float] = None
     phase_offset_b: Optional[float] = None
     amplitude_b: Optional[float] = None
@@ -106,50 +87,26 @@ class Fgen3(HardwareModule, SignalModule):
         doc="If True, routes output of fgen3 to DSP, otherwise routes ASG output to DSP"
     )
 
-    # Overall Output Settings
-    overall_dc_offset_a = FloatRegister(
-        0x0004,
-        bits=FgenConstants.DACBITS,
-        norm=2 ** (FgenConstants.DACBITS - 1),
-        signed=True,
-        min=-1.0,
-        max=1.0,
-        doc="DC offset added to the final DAC A output [V]."
+    # Active SSB-calibration slot selection (control reg 0x000C)
+    active_slot = BoolRegister(
+        0x000C, bit=0,
+        doc="Software-selected active calibration slot (0/1 for NSLOTS=2). "
+            "Used when active_slot_src=False."
+    )
+    active_slot_src = BoolRegister(
+        0x000C, bit=1,
+        doc="Active-slot source: False = use active_slot (software); "
+            "True = use the hardware current_step index from the scan block."
     )
 
-    overall_dc_offset_b = FloatRegister(
-        0x0008,
-        bits=FgenConstants.DACBITS,
-        norm=2 ** (FgenConstants.DACBITS - 1),
-        signed=True,
-        min=-1.0,
-        max=1.0,
-        doc="DC offset added to the final DAC B output [V]."
-    )
-
-    # Component-specific registers
+    # ------------------------------------------------------------------
+    # Component-specific NON-cal registers (identical across resonances,
+    # not slotted): base frequency, FM, and per-component enable.
+    # ------------------------------------------------------------------
     # Component 0
     frequency0 = FrequencyRegister(
         _COMPONENT_ADDR_OFFSETS[0] + 0x00, bits=FgenConstants.PHASEBITS,
         doc="Base frequency for component 0 [Hz]."
-    )
-    phase_offset_a0 = PhaseRegister(
-        _COMPONENT_ADDR_OFFSETS[0] + 0x04, bits=FgenConstants.PHASEBITS,
-        doc="Phase offset for component 0 contribution to DAC A [degrees]."
-    )
-    amplitude_a0 = FloatRegister(
-        _COMPONENT_ADDR_OFFSETS[0] + 0x08, bits=FgenConstants.GAINBITS,
-        norm=2.0**(FgenConstants.GAINBITS - 1), signed=False,
-        min=0.0, max=1.0, doc="Amplitude for component 0 contribution to DAC A (0.0 to 1.0)."
-    )
-    phase_offset_b0 = PhaseRegister(
-        _COMPONENT_ADDR_OFFSETS[0] + 0x0C, bits=FgenConstants.PHASEBITS,
-        doc="Phase offset for component 0 contribution to DAC B [degrees]."
-    )
-    amplitude_b0 = FloatRegister(
-        _COMPONENT_ADDR_OFFSETS[0] + 0x10, bits=FgenConstants.GAINBITS,
-        norm=2.0**(FgenConstants.GAINBITS - 1), signed=False,
-        min=0.0, max=1.0, doc="Amplitude for component 0 contribution to DAC B (0.0 to 1.0)."
     )
     fm_enable0 = BoolRegister(
         _COMPONENT_ADDR_OFFSETS[0] + 0x14, bit=0,
@@ -169,24 +126,6 @@ class Fgen3(HardwareModule, SignalModule):
         _COMPONENT_ADDR_OFFSETS[1] + 0x00, bits=FgenConstants.PHASEBITS,
         doc="Base frequency for component 1 [Hz]."
     )
-    phase_offset_a1 = PhaseRegister(
-        _COMPONENT_ADDR_OFFSETS[1] + 0x04, bits=FgenConstants.PHASEBITS,
-        doc="Phase offset for component 1 contribution to DAC A [degrees]."
-    )
-    amplitude_a1 = FloatRegister(
-        _COMPONENT_ADDR_OFFSETS[1] + 0x08, bits=FgenConstants.GAINBITS,
-        norm=2.0**(FgenConstants.GAINBITS - 1), signed=False,
-        min=0.0, max=1.0, doc="Amplitude for component 1 contribution to DAC A (0.0 to 1.0)."
-    )
-    phase_offset_b1 = PhaseRegister(
-        _COMPONENT_ADDR_OFFSETS[1] + 0x0C, bits=FgenConstants.PHASEBITS,
-        doc="Phase offset for component 1 contribution to DAC B [degrees]."
-    )
-    amplitude_b1 = FloatRegister(
-        _COMPONENT_ADDR_OFFSETS[1] + 0x10, bits=FgenConstants.GAINBITS,
-        norm=2.0**(FgenConstants.GAINBITS - 1), signed=False,
-        min=0.0, max=1.0, doc="Amplitude for component 1 contribution to DAC B (0.0 to 1.0)."
-    )
     fm_enable1 = BoolRegister(
         _COMPONENT_ADDR_OFFSETS[1] + 0x14, bit=0,
         doc="Enable frequency modulation for component 1."
@@ -205,24 +144,6 @@ class Fgen3(HardwareModule, SignalModule):
         _COMPONENT_ADDR_OFFSETS[2] + 0x00, bits=FgenConstants.PHASEBITS,
         doc="Base frequency for component 2 [Hz]."
     )
-    phase_offset_a2 = PhaseRegister(
-        _COMPONENT_ADDR_OFFSETS[2] + 0x04, bits=FgenConstants.PHASEBITS,
-        doc="Phase offset for component 2 contribution to DAC A [degrees]."
-    )
-    amplitude_a2 = FloatRegister(
-        _COMPONENT_ADDR_OFFSETS[2] + 0x08, bits=FgenConstants.GAINBITS,
-        norm=2.0**(FgenConstants.GAINBITS - 1), signed=False,
-        min=0.0, max=1.0, doc="Amplitude for component 2 contribution to DAC A (0.0 to 1.0)."
-    )
-    phase_offset_b2 = PhaseRegister(
-        _COMPONENT_ADDR_OFFSETS[2] + 0x0C, bits=FgenConstants.PHASEBITS,
-        doc="Phase offset for component 2 contribution to DAC B [degrees]."
-    )
-    amplitude_b2 = FloatRegister(
-        _COMPONENT_ADDR_OFFSETS[2] + 0x10, bits=FgenConstants.GAINBITS,
-        norm=2.0**(FgenConstants.GAINBITS - 1), signed=False,
-        min=0.0, max=1.0, doc="Amplitude for component 2 contribution to DAC B (0.0 to 1.0)."
-    )
     fm_enable2 = BoolRegister(
         _COMPONENT_ADDR_OFFSETS[2] + 0x14, bit=0,
         doc="Enable frequency modulation for component 2."
@@ -236,6 +157,117 @@ class Fgen3(HardwareModule, SignalModule):
         doc="Enable/disable component 2 contribution."
     )
 
+    # ==================================================================
+    # SSB calibration slot bank (Phase A).
+    # Packed bank at 0x0200, slot stride 0x40. Within a slot:
+    #   +0x00 dc_a, +0x04 dc_b, then per component c at +0x08 + 0x0C*c:
+    #   +0x00 amp_a, +0x04 amp_b, +0x08 phase_b.
+    # phase_offset_a is intentionally dropped (I-phase reference is
+    # hardwired to 0 in the FPGA). DC offsets are global per slot.
+    #
+    # SLOT 0 keeps the historical attribute names so existing
+    # single-resonance code (e.g. qudi RedPitayaIFSource) keeps working;
+    # at the register level it now lives in the clean cal bank.
+    # ==================================================================
+    # --- Slot 0 (base 0x0200) ---
+    # NOTE: the signed DC registers carry bitmask=2^DACBITS-1 so the read masks to the
+    # register width before two's-complement interpretation. (The FPGA read path
+    # sign-extends the value to 32 bits; without the mask, negative offsets read back as
+    # large positive numbers.)
+    overall_dc_offset_a = FloatRegister(
+        0x0200, bits=FgenConstants.DACBITS, bitmask=2 ** FgenConstants.DACBITS - 1,
+        norm=2 ** (FgenConstants.DACBITS - 1),
+        signed=True, min=-1.0, max=1.0,
+        doc="Slot 0: DC offset added to the final DAC A output [V] (carrier null)."
+    )
+    overall_dc_offset_b = FloatRegister(
+        0x0204, bits=FgenConstants.DACBITS, bitmask=2 ** FgenConstants.DACBITS - 1,
+        norm=2 ** (FgenConstants.DACBITS - 1),
+        signed=True, min=-1.0, max=1.0,
+        doc="Slot 0: DC offset added to the final DAC B output [V] (carrier null)."
+    )
+    amplitude_a0 = FloatRegister(
+        0x0208, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 0, comp 0: amplitude to DAC A (I)."
+    )
+    amplitude_b0 = FloatRegister(
+        0x020C, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 0, comp 0: amplitude to DAC B (Q)."
+    )
+    phase_offset_b0 = PhaseRegister(
+        0x0210, bits=FgenConstants.PHASEBITS,
+        doc="Slot 0, comp 0: phase offset to DAC B [degrees] (I/Q quadrature + SSB phase corr.)."
+    )
+    amplitude_a1 = FloatRegister(
+        0x0214, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 0, comp 1: amplitude to DAC A (I)."
+    )
+    amplitude_b1 = FloatRegister(
+        0x0218, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 0, comp 1: amplitude to DAC B (Q)."
+    )
+    phase_offset_b1 = PhaseRegister(
+        0x021C, bits=FgenConstants.PHASEBITS,
+        doc="Slot 0, comp 1: phase offset to DAC B [degrees]."
+    )
+    amplitude_a2 = FloatRegister(
+        0x0220, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 0, comp 2: amplitude to DAC A (I)."
+    )
+    amplitude_b2 = FloatRegister(
+        0x0224, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 0, comp 2: amplitude to DAC B (Q)."
+    )
+    phase_offset_b2 = PhaseRegister(
+        0x0228, bits=FgenConstants.PHASEBITS,
+        doc="Slot 0, comp 2: phase offset to DAC B [degrees]."
+    )
+
+    # --- Slot 1 (base 0x0240) ---
+    cal1_dc_offset_a = FloatRegister(
+        0x0240, bits=FgenConstants.DACBITS, bitmask=2 ** FgenConstants.DACBITS - 1,
+        norm=2 ** (FgenConstants.DACBITS - 1),
+        signed=True, min=-1.0, max=1.0, doc="Slot 1: DC offset to DAC A [V] (carrier null)."
+    )
+    cal1_dc_offset_b = FloatRegister(
+        0x0244, bits=FgenConstants.DACBITS, bitmask=2 ** FgenConstants.DACBITS - 1,
+        norm=2 ** (FgenConstants.DACBITS - 1),
+        signed=True, min=-1.0, max=1.0, doc="Slot 1: DC offset to DAC B [V] (carrier null)."
+    )
+    cal1_amplitude_a0 = FloatRegister(
+        0x0248, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 1, comp 0: amplitude to DAC A (I)."
+    )
+    cal1_amplitude_b0 = FloatRegister(
+        0x024C, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 1, comp 0: amplitude to DAC B (Q)."
+    )
+    cal1_phase_offset_b0 = PhaseRegister(
+        0x0250, bits=FgenConstants.PHASEBITS, doc="Slot 1, comp 0: phase offset to DAC B [degrees]."
+    )
+    cal1_amplitude_a1 = FloatRegister(
+        0x0254, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 1, comp 1: amplitude to DAC A (I)."
+    )
+    cal1_amplitude_b1 = FloatRegister(
+        0x0258, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 1, comp 1: amplitude to DAC B (Q)."
+    )
+    cal1_phase_offset_b1 = PhaseRegister(
+        0x025C, bits=FgenConstants.PHASEBITS, doc="Slot 1, comp 1: phase offset to DAC B [degrees]."
+    )
+    cal1_amplitude_a2 = FloatRegister(
+        0x0260, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 1, comp 2: amplitude to DAC A (I)."
+    )
+    cal1_amplitude_b2 = FloatRegister(
+        0x0264, bits=FgenConstants.GAINBITS, norm=2.0**(FgenConstants.GAINBITS - 1),
+        signed=False, min=0.0, max=1.0, doc="Slot 1, comp 2: amplitude to DAC B (Q)."
+    )
+    cal1_phase_offset_b2 = PhaseRegister(
+        0x0268, bits=FgenConstants.PHASEBITS, doc="Slot 1, comp 2: phase offset to DAC B [degrees]."
+    )
+
     # Read-only FPGA Parameters
     _PHASEBITS_HW = ConstantIntRegister(0xFF00, bits=32, doc="Phase accumulator bits (read from HW).")
     _LUTSZ_HW = ConstantIntRegister(0xFF04, bits=32, doc="LUT size (log2) (read from HW).")
@@ -244,17 +276,26 @@ class Fgen3(HardwareModule, SignalModule):
     _GAINBITS_HW = ConstantIntRegister(0xFF10, bits=32, doc="Component Amplitude register width (read from HW).")
     _FM_MOD_BITS_HW = ConstantIntRegister(0xFF14, bits=32, doc="FM modulator input width (read from HW).")
     _NUM_COMPONENTS_HW = ConstantIntRegister(0xFF18, bits=32, doc="Number of components implemented (read from HW).")
+    _NSLOTS_HW = ConstantIntRegister(0xFF1C, bits=32, doc="Number of calibration slots implemented (read from HW).")
 
-    # Define setup and GUI attributes as class-level lists
+    # Define setup and GUI attributes as class-level lists.
+    # phase_offset_a* dropped (I-phase ref hardwired to 0). overall_dc_offset_a/b and
+    # amplitude_*/phase_offset_b* are now slot 0 of the cal bank (backward-compatible names).
     _setup_attributes = [
         "gen_enable", "output_zero", "output_to_dsp_enable_o",
+        "active_slot", "active_slot_src",
         "overall_dc_offset_a", "overall_dc_offset_b",
-        "enable0", "frequency0", "phase_offset_a0", "amplitude_a0",
+        "enable0", "frequency0", "amplitude_a0",
         "phase_offset_b0", "amplitude_b0", "fm_enable0", "fm_deviation_khz0",
-        "enable1", "frequency1", "phase_offset_a1", "amplitude_a1",
+        "enable1", "frequency1", "amplitude_a1",
         "phase_offset_b1", "amplitude_b1", "fm_enable1", "fm_deviation_khz1",
-        "enable2", "frequency2", "phase_offset_a2", "amplitude_a2",
-        "phase_offset_b2", "amplitude_b2", "fm_enable2", "fm_deviation_khz2"
+        "enable2", "frequency2", "amplitude_a2",
+        "phase_offset_b2", "amplitude_b2", "fm_enable2", "fm_deviation_khz2",
+        # Calibration slot 1
+        "cal1_dc_offset_a", "cal1_dc_offset_b",
+        "cal1_amplitude_a0", "cal1_amplitude_b0", "cal1_phase_offset_b0",
+        "cal1_amplitude_a1", "cal1_amplitude_b1", "cal1_phase_offset_b1",
+        "cal1_amplitude_a2", "cal1_amplitude_b2", "cal1_phase_offset_b2",
     ]
     _gui_attributes = list(_setup_attributes)
 
@@ -270,6 +311,54 @@ class Fgen3(HardwareModule, SignalModule):
         if hw_num is not None and hw_num > 0:
             return min(hw_num, FgenConstants.NUM_COMPONENTS)
         return FgenConstants.NUM_COMPONENTS
+
+    @property
+    def nslots(self) -> int:
+        """Number of SSB calibration slots available."""
+        hw_num = self._NSLOTS_HW
+        if hw_num is not None and hw_num > 0:
+            return min(hw_num, FgenConstants.NSLOTS)
+        return FgenConstants.NSLOTS
+
+    def load_cal_slot(self, slot: int, comps, dc_a: float, dc_b: float) -> None:
+        """
+        Load a full SSB calibration slot.
+
+        Writes the *already-converted* register words (the (g, phi) -> amplitude/phase
+        SSB conversion lives in the qudi RedPitayaIFSource layer, per OQ-8). This method
+        is calibration-format-agnostic: it just stores the per-component I/Q amplitudes
+        and the DAC-B phase offset plus the (shared per slot) carrier-null DC offsets.
+
+        Parameters
+        ----------
+        slot : int
+            Calibration slot index (0 .. nslots-1). Slot 0 uses the backward-compatible
+            attribute names; slot >= 1 uses the ``cal{slot}_*`` names.
+        comps : list of (amplitude_a, amplitude_b, phase_offset_b_deg)
+            One tuple per frequency component (up to num_components). amplitude_a/b in
+            [0, 1]; phase_offset_b in degrees.
+        dc_a, dc_b : float
+            Carrier-null DC offsets for DAC A / DAC B [V], shared across the slot.
+        """
+        if not (0 <= slot < self.nslots):
+            raise ValueError(f"slot must be in 0..{self.nslots - 1}, got {slot}")
+        if len(comps) > self.num_components:
+            raise ValueError(
+                f"too many components ({len(comps)}); max {self.num_components}")
+
+        prefix = "" if slot == 0 else f"cal{slot}_"
+        dc_a_name = "overall_dc_offset_a" if slot == 0 else f"{prefix}dc_offset_a"
+        dc_b_name = "overall_dc_offset_b" if slot == 0 else f"{prefix}dc_offset_b"
+        setattr(self, dc_a_name, dc_a)
+        setattr(self, dc_b_name, dc_b)
+
+        for c, (amp_a, amp_b, phase_b) in enumerate(comps):
+            setattr(self, f"{prefix}amplitude_a{c}", amp_a)
+            setattr(self, f"{prefix}amplitude_b{c}", amp_b)
+            setattr(self, f"{prefix}phase_offset_b{c}", phase_b)
+
+        self._logger.debug(
+            f"Loaded cal slot {slot}: {len(comps)} comps, dc_a={dc_a:.5f}, dc_b={dc_b:.5f}")
 
     @property
     def output_signal(self) -> float:
@@ -302,16 +391,14 @@ class Fgen3(HardwareModule, SignalModule):
         return [value] + [default] * (size - 1)
 
     def _component_setup(self, index: int, enable: Optional[bool] = None, frequency: Optional[float] = None,
-                         phase_offset_a: Optional[float] = None, amplitude_a: Optional[float] = None,
+                         amplitude_a: Optional[float] = None,
                          phase_offset_b: Optional[float] = None, amplitude_b: Optional[float] = None,
                          fm_enable: Optional[bool] = None, fm_deviation_khz: Optional[int] = None):
-        """Helper to set attributes for a specific component index."""
+        """Helper to set attributes for a specific component index (writes the active cal slot)."""
         if enable is not None:
             setattr(self, f'enable{index}', enable)
         if frequency is not None:
             setattr(self, f'frequency{index}', frequency)
-        if phase_offset_a is not None:
-            setattr(self, f'phase_offset_a{index}', phase_offset_a)
         if amplitude_a is not None:
             setattr(self, f'amplitude_a{index}', amplitude_a)
         if phase_offset_b is not None:
@@ -349,8 +436,6 @@ class Fgen3(HardwareModule, SignalModule):
             Enable state for each component.
         frequencies : float or list of float, optional
             Frequency in Hz for each component.
-        phase_offsets_a : float or list of float, optional
-            Phase offset in degrees for DAC A contribution.
         amplitudes_a : float or list of float, optional
             Amplitude [0.0, 1.0] for DAC A contribution.
         phase_offsets_b : float or list of float, optional
@@ -366,7 +451,6 @@ class Fgen3(HardwareModule, SignalModule):
         ------------------------------------------------------------
         enable0, enable1, enable2 : bool, optional
         frequency0, frequency1, frequency2 : float, optional
-        phase_offset_a0, phase_offset_a1, phase_offset_a2 : float, optional
         amplitude_a0, amplitude_a1, amplitude_a2 : float, optional
         phase_offset_b0, phase_offset_b1, phase_offset_b2 : float, optional
         amplitude_b0, amplitude_b1, amplitude_b2 : float, optional
@@ -389,7 +473,6 @@ class Fgen3(HardwareModule, SignalModule):
                 # (list_param_name, individual_prefix, default_value)
                 ('enables', 'enable', True),
                 ('frequencies', 'frequency', None),
-                ('phase_offsets_a', 'phase_offset_a', None),
                 ('amplitudes_a', 'amplitude_a', None),
                 ('phase_offsets_b', 'phase_offset_b', None),
                 ('amplitudes_b', 'amplitude_b', None),
@@ -427,7 +510,6 @@ class Fgen3(HardwareModule, SignalModule):
                     index=i,
                     enable=component_values['enable'][i],
                     frequency=component_values['frequency'][i],
-                    phase_offset_a=component_values['phase_offset_a'][i],
                     amplitude_a=component_values['amplitude_a'][i],
                     phase_offset_b=component_values['phase_offset_b'][i],
                     amplitude_b=component_values['amplitude_b'][i],
@@ -482,7 +564,6 @@ class Fgen3(HardwareModule, SignalModule):
         return ComponentConfig(
             enable=getattr(self, f'enable{index}'),
             frequency=getattr(self, f'frequency{index}'),
-            phase_offset_a=getattr(self, f'phase_offset_a{index}'),
             amplitude_a=getattr(self, f'amplitude_a{index}'),
             phase_offset_b=getattr(self, f'phase_offset_b{index}'),
             amplitude_b=getattr(self, f'amplitude_b{index}'),

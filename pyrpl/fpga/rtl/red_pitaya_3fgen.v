@@ -6,8 +6,7 @@
  * channels, with possible frequency modulation and phase offsets for all signals.
  * Uses memory-efficient quarter-sine LUTs.
  *
- * This module is integrated with the ODMR frequency lock module
- * to enable automatic resonance tracking in ODMR experiments.
+ * For ODMR resonance tracking, the module allows real-time adaption of the generated frequency.
  *
  * FTW Correction Signal Path:
  *   odmr_freq_lock_1f → ftw_correction_i (signed 32-bit) → Phase Accumulators
@@ -26,7 +25,8 @@ module red_pitaya_3fgen #(
     parameter LUTBITS     = 14, // LUT output bits (matches DACBITS)
     parameter DACBITS     = 14, // DAC output bits
     parameter GAINBITS    = 14, // Amplitude control bits (unsigned, per component, similar to ASG set_amp)
-    parameter FM_MOD_BITS = 17  // Bitwidth of the FM modulating signal input (signed)
+    parameter FM_MOD_BITS = 17, // Bitwidth of the FM modulating signal input (signed)
+    parameter NSLOTS      = 2   // Number of SSB calibration slots (resonances). N=2 now, generalizes to 8.
 ) (
     // --- Clocks and Reset ---
     input                             clk_i,            // Processing clock (e.g., 125 MHz)
@@ -41,6 +41,7 @@ module red_pitaya_3fgen #(
     // --- Inputs ---
     input signed [FM_MOD_BITS-1:0]    fm_mod_in,        // Input/Reference signal for Frequency Modulation
     input signed [PHASEBITS-1:0]      ftw_correction_i,  // Frequency tuning word correction from ODMR tracker (applied to all 3 components)
+    input      [7:0]                  current_step_i,   // Hardware "which resonance is live" index (from scan block); selects the active cal slot when active_slot_src=1. Tie to 0 if unrouted.
 
     // --- System Bus Interface ---
     input      [31:0]                 sys_addr,         // Bus address
@@ -60,6 +61,11 @@ module red_pitaya_3fgen #(
     localparam FM_SCALING_FACTOR = 34360;   // for scaling the FM deviation to the phase step size
     localparam MAX_FM_DEV_KHZ_BITS = 13;    // 13 bits for 0-8192 kHz deviation
 
+    // SSB calibration slot bank
+    localparam SLOTSEL_BITS  = (NSLOTS <= 1) ? 1 : $clog2(NSLOTS); // width of the slot index
+    localparam [15:0] CALBANK_BASE = 16'h0200;  // base address of the packed cal bank
+    localparam [15:0] SLOT_STRIDE  = 16'h0040;  // per-slot address stride
+
     // Bit widths for internal calculations
     localparam PROD_BITS_COMPONENT_AMP = LUTBITS + GAINBITS; // signed(LUTBITS) * unsigned(GAINBITS) -> e.g., 14 + 14 = 28
     localparam SCALED_SUM_COMPONENT_BITS = 16;
@@ -72,18 +78,25 @@ module red_pitaya_3fgen #(
     reg gen_enable;
     reg output_zero;
 
+    // Per-component registers not related to calibration (identical across resonances under constant-IF — NOT slotted)
     reg [PHASEBITS-1:0] comp_freq_step      [NUM_COMPONENTS-1:0];
-    reg [PHASEBITS-1:0] comp_phase_offset_a [NUM_COMPONENTS-1:0];
-    reg [GAINBITS-1:0]  comp_amplitude_a    [NUM_COMPONENTS-1:0];
-    reg [PHASEBITS-1:0] comp_phase_offset_b [NUM_COMPONENTS-1:0];
-    reg [GAINBITS-1:0]  comp_amplitude_b    [NUM_COMPONENTS-1:0];
     reg                 comp_enable         [NUM_COMPONENTS-1:0];
-
     reg                 fm_enable           [NUM_COMPONENTS-1:0];
     reg [31:0]          fm_deviation_kHz    [NUM_COMPONENTS-1:0];
 
-    reg signed [DACBITS-1:0] overall_dc_offset_a;
-    reg signed [DACBITS-1:0] overall_dc_offset_b;
+    // --- SSB calibration slot bank ---
+    // Per-resonance SSB corrections, NSLOTS slots.
+    reg [GAINBITS-1:0]  cal_amplitude_a     [NSLOTS-1:0][NUM_COMPONENTS-1:0];
+    reg [GAINBITS-1:0]  cal_amplitude_b     [NSLOTS-1:0][NUM_COMPONENTS-1:0];
+    reg [PHASEBITS-1:0] cal_phase_offset_b  [NSLOTS-1:0][NUM_COMPONENTS-1:0];
+    reg signed [DACBITS-1:0] cal_dc_offset_a [NSLOTS-1:0];
+    reg signed [DACBITS-1:0] cal_dc_offset_b [NSLOTS-1:0];
+
+    // Active-slot selection
+    reg [SLOTSEL_BITS-1:0] active_slot;      // sw-selected slot
+    reg                    active_slot_src;  // 0 = use active_slot (sw); 1 = use current_step_i (hw)
+    wire [SLOTSEL_BITS-1:0] slot_sel = active_slot_src ? current_step_i[SLOTSEL_BITS-1:0] : active_slot;
+    reg  [SLOTSEL_BITS-1:0] slot_sel_r;      // registered selector (glitch-free swap into the datapath)
 
     //--------------------------------------------------------------------------
     // Internal Signals and Registers
@@ -126,6 +139,12 @@ module red_pitaya_3fgen #(
     wire signed [DACBITS-1:0] dac_a_o_signed;
     wire signed [DACBITS-1:0] dac_b_o_signed;
 
+    // cal-bank address decode (window: CALBANK_BASE .. CALBANK_BASE + NSLOTS*SLOT_STRIDE - 1)
+    wire        cal_sel  = (sys_addr[15:0] >= CALBANK_BASE) &&
+                           (sys_addr[15:0] <  CALBANK_BASE + NSLOTS*SLOT_STRIDE);
+    wire [SLOTSEL_BITS-1:0] cal_slot = sys_addr[5+SLOTSEL_BITS -: SLOTSEL_BITS]; // SLOT_STRIDE=0x40 -> slot bits start at bit 6
+    wire [5:0]  cal_off  = sys_addr[5:0];
+
     always @(posedge clk_i) begin
         dac_a_o <= dac_a_o_signed;
         dac_b_o <= dac_b_o_signed;
@@ -135,22 +154,29 @@ module red_pitaya_3fgen #(
     // System Bus Logic
     //--------------------------------------------------------------------------
     integer k_idx;
+    integer s_idx;
     always @(posedge clk_i) begin
         if (!rstn_i) begin
             gen_enable <= 1'b0;
             output_zero <= 1'b0;
-            output_to_dsp_enable_o <= 1'b0; 
-            overall_dc_offset_a <= {DACBITS{1'b0}};
-            overall_dc_offset_b <= {DACBITS{1'b0}};
+            output_to_dsp_enable_o <= 1'b0;
+            active_slot <= {SLOTSEL_BITS{1'b0}};
+            active_slot_src <= 1'b0;
+            // Cal bank: amplitudes reset to 0 (an unloaded slot is silent)
+            for (s_idx = 0; s_idx < NSLOTS; s_idx = s_idx+1) begin
+                cal_dc_offset_a[s_idx] <= {DACBITS{1'b0}};
+                cal_dc_offset_b[s_idx] <= {DACBITS{1'b0}};
+                for (k_idx = 0; k_idx < NUM_COMPONENTS; k_idx = k_idx+1) begin
+                    cal_amplitude_a[s_idx][k_idx]    <= {GAINBITS{1'b0}};
+                    cal_amplitude_b[s_idx][k_idx]    <= {GAINBITS{1'b0}};
+                    cal_phase_offset_b[s_idx][k_idx] <= {PHASEBITS{1'b0}};
+                end
+            end
             for (k_idx = 0; k_idx < NUM_COMPONENTS; k_idx = k_idx+1) begin
-                comp_freq_step[k_idx]      <= {PHASEBITS{1'b0}};
-                comp_phase_offset_a[k_idx] <= {PHASEBITS{1'b0}};
-                comp_amplitude_a[k_idx]    <= {GAINBITS{1'b0}};
-                comp_phase_offset_b[k_idx] <= {PHASEBITS{1'b0}};
-                comp_amplitude_b[k_idx]    <= {GAINBITS{1'b0}};
-                fm_enable[k_idx]           <= 1'b0;
-                fm_deviation_kHz[k_idx]    <= 32'd0;
-                comp_enable[k_idx]         <= 1'b1;
+                comp_freq_step[k_idx]   <= {PHASEBITS{1'b0}};
+                fm_enable[k_idx]        <= 1'b0;
+                fm_deviation_kHz[k_idx] <= 32'd0;
+                comp_enable[k_idx]      <= 1'b1;
             end
             sys_ack <= 1'b0;
             sys_err <= 1'b0;
@@ -161,96 +187,111 @@ module red_pitaya_3fgen #(
 
             if (sys_wen) begin
                 sys_ack <= 1'b1;
-                case (sys_addr[15:0])
-                    // Global Controls
-                    16'h0000: {output_to_dsp_enable_o, output_zero, gen_enable} <= sys_wdata[2:0];
-                    16'h0004: overall_dc_offset_a <= sys_wdata[DACBITS-1:0];
-                    16'h0008: overall_dc_offset_b <= sys_wdata[DACBITS-1:0];
+                if (cal_sel) begin
+                    // SSB calibration slot bank: slot = cal_slot, offset = cal_off
+                    case (cal_off)
+                        6'h00: cal_dc_offset_a[cal_slot]    <= sys_wdata[DACBITS-1:0];
+                        6'h04: cal_dc_offset_b[cal_slot]    <= sys_wdata[DACBITS-1:0];
+                        6'h08: cal_amplitude_a[cal_slot][0]    <= sys_wdata[GAINBITS-1:0];
+                        6'h0C: cal_amplitude_b[cal_slot][0]    <= sys_wdata[GAINBITS-1:0];
+                        6'h10: cal_phase_offset_b[cal_slot][0] <= sys_wdata[PHASEBITS-1:0];
+                        6'h14: cal_amplitude_a[cal_slot][1]    <= sys_wdata[GAINBITS-1:0];
+                        6'h18: cal_amplitude_b[cal_slot][1]    <= sys_wdata[GAINBITS-1:0];
+                        6'h1C: cal_phase_offset_b[cal_slot][1] <= sys_wdata[PHASEBITS-1:0];
+                        6'h20: cal_amplitude_a[cal_slot][2]    <= sys_wdata[GAINBITS-1:0];
+                        6'h24: cal_amplitude_b[cal_slot][2]    <= sys_wdata[GAINBITS-1:0];
+                        6'h28: cal_phase_offset_b[cal_slot][2] <= sys_wdata[PHASEBITS-1:0];
+                        default: sys_ack <= 1'b0;
+                    endcase
+                end else begin
+                    case (sys_addr[15:0])
+                        // Global Controls
+                        16'h0000: {output_to_dsp_enable_o, output_zero, gen_enable} <= sys_wdata[2:0];
+                        16'h000C: begin
+                                      active_slot     <= sys_wdata[SLOTSEL_BITS-1:0];
+                                      active_slot_src <= sys_wdata[SLOTSEL_BITS];
+                                  end
 
-                    // Component 0
-                    16'h0010: comp_freq_step[0]      <= sys_wdata[PHASEBITS-1:0];
-                    16'h0014: comp_phase_offset_a[0] <= sys_wdata[PHASEBITS-1:0];
-                    16'h0018: comp_amplitude_a[0]    <= sys_wdata[GAINBITS-1:0];
-                    16'h001C: comp_phase_offset_b[0] <= sys_wdata[PHASEBITS-1:0];
-                    16'h0020: comp_amplitude_b[0]    <= sys_wdata[GAINBITS-1:0];
-                    16'h0024: fm_enable[0]           <= sys_wdata[0];
-                    16'h0028: fm_deviation_kHz[0]    <= sys_wdata;
-                    16'h002C: comp_enable[0]         <= sys_wdata[0];
+                        // Component 0 (non-cal: freq / fm / enable)
+                        16'h0010: comp_freq_step[0]   <= sys_wdata[PHASEBITS-1:0];
+                        16'h0024: fm_enable[0]        <= sys_wdata[0];
+                        16'h0028: fm_deviation_kHz[0] <= sys_wdata;
+                        16'h002C: comp_enable[0]      <= sys_wdata[0];
 
-                    // Component 1
-                    16'h0040: comp_freq_step[1]      <= sys_wdata[PHASEBITS-1:0];
-                    16'h0044: comp_phase_offset_a[1] <= sys_wdata[PHASEBITS-1:0];
-                    16'h0048: comp_amplitude_a[1]    <= sys_wdata[GAINBITS-1:0];
-                    16'h004C: comp_phase_offset_b[1] <= sys_wdata[PHASEBITS-1:0];
-                    16'h0050: comp_amplitude_b[1]    <= sys_wdata[GAINBITS-1:0];
-                    16'h0054: fm_enable[1]           <= sys_wdata[0];
-                    16'h0058: fm_deviation_kHz[1]    <= sys_wdata;
-                    16'h005C: comp_enable[1]         <= sys_wdata[0];
+                        // Component 1
+                        16'h0040: comp_freq_step[1]   <= sys_wdata[PHASEBITS-1:0];
+                        16'h0054: fm_enable[1]        <= sys_wdata[0];
+                        16'h0058: fm_deviation_kHz[1] <= sys_wdata;
+                        16'h005C: comp_enable[1]      <= sys_wdata[0];
 
-                    // Component 2
-                    16'h0070: comp_freq_step[2]      <= sys_wdata[PHASEBITS-1:0];
-                    16'h0074: comp_phase_offset_a[2] <= sys_wdata[PHASEBITS-1:0];
-                    16'h0078: comp_amplitude_a[2]    <= sys_wdata[GAINBITS-1:0];
-                    16'h007C: comp_phase_offset_b[2] <= sys_wdata[PHASEBITS-1:0];
-                    16'h0080: comp_amplitude_b[2]    <= sys_wdata[GAINBITS-1:0];
-                    16'h0084: fm_enable[2]           <= sys_wdata[0];
-                    16'h0088: fm_deviation_kHz[2]    <= sys_wdata;
-                    16'h008C: comp_enable[2]         <= sys_wdata[0];
+                        // Component 2
+                        16'h0070: comp_freq_step[2]   <= sys_wdata[PHASEBITS-1:0];
+                        16'h0084: fm_enable[2]        <= sys_wdata[0];
+                        16'h0088: fm_deviation_kHz[2] <= sys_wdata;
+                        16'h008C: comp_enable[2]      <= sys_wdata[0];
 
-                    default: sys_ack <= 1'b0;
-                endcase
+                        default: sys_ack <= 1'b0;
+                    endcase
+                end
             end else if (sys_ren) begin
                 sys_ack <= 1'b1;
-                case (sys_addr[15:0])
-                    // Global Controls
-                    16'h0000: sys_rdata <= {29'b0, output_to_dsp_enable_o, output_zero, gen_enable};
-                    16'h0004: sys_rdata <= {{32-DACBITS{overall_dc_offset_a[DACBITS-1]}}, overall_dc_offset_a};
-                    16'h0008: sys_rdata <= {{32-DACBITS{overall_dc_offset_b[DACBITS-1]}}, overall_dc_offset_b};
+                if (cal_sel) begin
+                    case (cal_off)
+                        // Zero-extend (not sign-extend): the Python FloatRegister does its own
+                        // two's-complement on the low DACBITS bits (masked via bitmask).
+                        6'h00: sys_rdata <= {{32-DACBITS{1'b0}}, cal_dc_offset_a[cal_slot]};
+                        6'h04: sys_rdata <= {{32-DACBITS{1'b0}}, cal_dc_offset_b[cal_slot]};
+                        6'h08: sys_rdata <= {{32-GAINBITS{1'b0}}, cal_amplitude_a[cal_slot][0]};
+                        6'h0C: sys_rdata <= {{32-GAINBITS{1'b0}}, cal_amplitude_b[cal_slot][0]};
+                        6'h10: sys_rdata <= cal_phase_offset_b[cal_slot][0];
+                        6'h14: sys_rdata <= {{32-GAINBITS{1'b0}}, cal_amplitude_a[cal_slot][1]};
+                        6'h18: sys_rdata <= {{32-GAINBITS{1'b0}}, cal_amplitude_b[cal_slot][1]};
+                        6'h1C: sys_rdata <= cal_phase_offset_b[cal_slot][1];
+                        6'h20: sys_rdata <= {{32-GAINBITS{1'b0}}, cal_amplitude_a[cal_slot][2]};
+                        6'h24: sys_rdata <= {{32-GAINBITS{1'b0}}, cal_amplitude_b[cal_slot][2]};
+                        6'h28: sys_rdata <= cal_phase_offset_b[cal_slot][2];
+                        default: begin sys_rdata <= 32'hDEADBEEF; sys_ack <= 1'b0; end
+                    endcase
+                end else begin
+                    case (sys_addr[15:0])
+                        // Global Controls
+                        16'h0000: sys_rdata <= {29'b0, output_to_dsp_enable_o, output_zero, gen_enable};
+                        16'h000C: sys_rdata <= {{32-1-SLOTSEL_BITS{1'b0}}, active_slot_src, active_slot};
 
-                    // Component 0
-                    16'h0010: sys_rdata <= comp_freq_step[0];
-                    16'h0014: sys_rdata <= comp_phase_offset_a[0];
-                    16'h0018: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_a[0]};
-                    16'h001C: sys_rdata <= comp_phase_offset_b[0];
-                    16'h0020: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_b[0]};
-                    16'h0024: sys_rdata <= {31'b0, fm_enable[0]};
-                    16'h0028: sys_rdata <= fm_deviation_kHz[0];
-                    16'h002C: sys_rdata <= {31'b0, comp_enable[0]};
+                        // Component 0 (non-cal)
+                        16'h0010: sys_rdata <= comp_freq_step[0];
+                        16'h0024: sys_rdata <= {31'b0, fm_enable[0]};
+                        16'h0028: sys_rdata <= fm_deviation_kHz[0];
+                        16'h002C: sys_rdata <= {31'b0, comp_enable[0]};
 
-                    // Component 1
-                    16'h0040: sys_rdata <= comp_freq_step[1];
-                    16'h0044: sys_rdata <= comp_phase_offset_a[1];
-                    16'h0048: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_a[1]};
-                    16'h004C: sys_rdata <= comp_phase_offset_b[1];
-                    16'h0050: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_b[1]};
-                    16'h0054: sys_rdata <= {31'b0, fm_enable[1]};
-                    16'h0058: sys_rdata <= fm_deviation_kHz[1];
-                    16'h005C: sys_rdata <= {31'b0, comp_enable[1]};
-                    
-                    // Component 2
-                    16'h0070: sys_rdata <= comp_freq_step[2];
-                    16'h0074: sys_rdata <= comp_phase_offset_a[2];
-                    16'h0078: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_a[2]};
-                    16'h007C: sys_rdata <= comp_phase_offset_b[2];
-                    16'h0080: sys_rdata <= {{32-GAINBITS{1'b0}}, comp_amplitude_b[2]};
-                    16'h0084: sys_rdata <= {31'b0, fm_enable[2]};
-                    16'h0088: sys_rdata <= fm_deviation_kHz[2];
-                    16'h008C: sys_rdata <= {31'b0, comp_enable[2]};
+                        // Component 1
+                        16'h0040: sys_rdata <= comp_freq_step[1];
+                        16'h0054: sys_rdata <= {31'b0, fm_enable[1]};
+                        16'h0058: sys_rdata <= fm_deviation_kHz[1];
+                        16'h005C: sys_rdata <= {31'b0, comp_enable[1]};
 
-                    // Read-only parameters
-                    16'hFF00: sys_rdata <= PHASEBITS;
-                    16'hFF04: sys_rdata <= LUTSZ;
-                    16'hFF08: sys_rdata <= LUTBITS;
-                    16'hFF0C: sys_rdata <= DACBITS;
-                    16'hFF10: sys_rdata <= GAINBITS;
-                    16'hFF14: sys_rdata <= FM_MOD_BITS;
-                    16'hFF18: sys_rdata <= NUM_COMPONENTS;
+                        // Component 2
+                        16'h0070: sys_rdata <= comp_freq_step[2];
+                        16'h0084: sys_rdata <= {31'b0, fm_enable[2]};
+                        16'h0088: sys_rdata <= fm_deviation_kHz[2];
+                        16'h008C: sys_rdata <= {31'b0, comp_enable[2]};
 
-                    default: begin
-                        sys_rdata <= 32'hDEADBEEF;
-                        sys_ack <= 1'b0;
-                    end
-                endcase
+                        // Read-only parameters
+                        16'hFF00: sys_rdata <= PHASEBITS;
+                        16'hFF04: sys_rdata <= LUTSZ;
+                        16'hFF08: sys_rdata <= LUTBITS;
+                        16'hFF0C: sys_rdata <= DACBITS;
+                        16'hFF10: sys_rdata <= GAINBITS;
+                        16'hFF14: sys_rdata <= FM_MOD_BITS;
+                        16'hFF18: sys_rdata <= NUM_COMPONENTS;
+                        16'hFF1C: sys_rdata <= NSLOTS;
+
+                        default: begin
+                            sys_rdata <= 32'hDEADBEEF;
+                            sys_ack <= 1'b0;
+                        end
+                    endcase
+                end
             end
         end
     end
@@ -264,6 +305,14 @@ module red_pitaya_3fgen #(
         end else begin
             ftw_correction_reg <= ftw_correction_i;
         end
+    end
+
+    //--------------------------------------------------------------------------
+    // Active-slot selector (registered)
+    //--------------------------------------------------------------------------
+    always @(posedge clk_i) begin
+        if (!rstn_i) slot_sel_r <= {SLOTSEL_BITS{1'b0}};
+        else         slot_sel_r <= slot_sel;
     end
 
     //--------------------------------------------------------------------------
@@ -300,9 +349,10 @@ module red_pitaya_3fgen #(
 
             // --- 3. Effective Phase Calculation (for LUT input) ---
             always @(posedge clk_i) begin
-                // These phase_eff signals are registered and become inputs to the LUT module
-                phase_eff_a[i] <= phase_acc[i] + comp_phase_offset_a[i];
-                phase_eff_b[i] <= phase_acc[i] + comp_phase_offset_b[i];
+                // These phase_eff signals are registered and become inputs to the LUT module.
+                // I-phase offset is hardwired to 0 (OQ-8: phase_offset_a ≡ 0); B uses the active slot's phase.
+                phase_eff_a[i] <= phase_acc[i];
+                phase_eff_b[i] <= phase_acc[i] + cal_phase_offset_b[slot_sel_r][i];
             end
 
             // --- 4. Sine Wave Generation using red_pitaya_quarter_wave_lut ---
@@ -335,9 +385,9 @@ module red_pitaya_3fgen #(
                     scaled_shifted_a[i] <= {SCALED_SUM_COMPONENT_BITS{1'b0}};
                     scaled_shifted_b[i] <= {SCALED_SUM_COMPONENT_BITS{1'b0}};
                 end else begin
-                    // comp_amplitude_a/b are unsigned GAINBITS wide
-                    prod_a[i] <= $signed(lut_sine_a[i]) * $signed(comp_amplitude_a[i]);
-                    prod_b[i] <= $signed(lut_sine_b[i]) * $signed(comp_amplitude_b[i]);
+                    // cal_amplitude_a/b are unsigned GAINBITS wide, selected from the active slot
+                    prod_a[i] <= $signed(lut_sine_a[i]) * $signed(cal_amplitude_a[slot_sel_r][i]);
+                    prod_b[i] <= $signed(lut_sine_b[i]) * $signed(cal_amplitude_b[slot_sel_r][i]);
 
                     // If component is enabled, scale and shift. Otherwise, output zero for this component.
                     if (comp_enable[i]) begin
@@ -373,9 +423,9 @@ module red_pitaya_3fgen #(
             dac_pre_sat_a <= {PRE_SAT_BITS{1'b0}};
             dac_pre_sat_b <= {PRE_SAT_BITS{1'b0}};
         end else begin
-            // Sign-extend overall_dc_offset before adding
-            dac_pre_sat_a <= sum_val_a + $signed({{PRE_SAT_BITS-DACBITS{overall_dc_offset_a[DACBITS-1]}}, overall_dc_offset_a});
-            dac_pre_sat_b <= sum_val_b + $signed({{PRE_SAT_BITS-DACBITS{overall_dc_offset_b[DACBITS-1]}}, overall_dc_offset_b});
+            // Sign-extend the active slot's DC offset (carrier null) before adding
+            dac_pre_sat_a <= sum_val_a + $signed({{PRE_SAT_BITS-DACBITS{cal_dc_offset_a[slot_sel_r][DACBITS-1]}}, cal_dc_offset_a[slot_sel_r]});
+            dac_pre_sat_b <= sum_val_b + $signed({{PRE_SAT_BITS-DACBITS{cal_dc_offset_b[slot_sel_r][DACBITS-1]}}, cal_dc_offset_b[slot_sel_r]});
         end
     end
 
