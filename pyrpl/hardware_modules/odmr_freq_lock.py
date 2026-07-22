@@ -103,7 +103,8 @@ import logging
 import numpy as np
 
 from ..modules import HardwareModule
-from ..attributes import (BoolRegister, IntRegister, FloatRegister, FloatProperty)
+from ..attributes import (BoolRegister, IntRegister, FloatRegister, FloatProperty,
+                          ConstantIntRegister)
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,8 @@ class OdmrFreqLock(HardwareModule):
     _setup_attributes = [
         'enable', 'invert', 'hold', 'deadband_enable',
         'mu_hz_per_lsb', 'deadband_lsb', 'max_correction_hz',
-        'prop_enable', 'kp_hz_per_lsb'
+        'prop_enable', 'kp_hz_per_lsb',
+        'active_slot', 'active_slot_src'
     ]
     _gui_attributes = _setup_attributes + ['locked', 'saturated', 'saturated_i', 'saturated_pi', 'error_lsb', 'correction_hz']
 
@@ -176,6 +178,28 @@ class OdmrFreqLock(HardwareModule):
                               bit=5,  # Bit 5 = 0x20
                               doc="Enable proportional path (PI control). "
                                   "When disabled, loop is integral-only for backward compatibility.")
+
+    #--------------------------------------------------------------------------
+    # SLOT CONTROL REGISTER (0x0024) - multi-resonance (Phase B)
+    #--------------------------------------------------------------------------
+
+    active_slot = BoolRegister(0x0024,
+                              bit=0,
+                              doc="Software-selected active integrator slot (0/1 for NSLOTS=2). "
+                                  "Used when active_slot_src=False. Only the active slot's "
+                                  "integrator updates; the others hold (bumpless).")
+
+    active_slot_src = BoolRegister(0x0024,
+                                  bit=8,
+                                  doc="Active-slot source: False = use active_slot (software); "
+                                      "True = follow the hardware current_step index from the scan block.")
+
+    #--------------------------------------------------------------------------
+    # NSLOTS READBACK (0x0028) - HW constant, confirms a multi-integrator bitstream
+    #--------------------------------------------------------------------------
+
+    _NSLOTS_HW = ConstantIntRegister(0x0028, bits=32,
+                                    doc="Number of integrator slots implemented (read from HW).")
 
     #--------------------------------------------------------------------------
     # GAIN REGISTER (0x0004) - Q8.24 format
@@ -396,6 +420,82 @@ class OdmrFreqLock(HardwareModule):
     def integrator_ftw(self):
         """Integrator state in FTW units (for diagnostics)."""
         return int(round(self.ftw_int))
+
+    #--------------------------------------------------------------------------
+    # PER-SLOT ACCESSORS (multi-resonance, Phase B)
+    #
+    # Each tracked resonance has its own integrator state. The packed per-slot
+    # readback bank lives at 0x0040 with stride 0x10 (slot s at 0x40 + s*0x10):
+    #   +0x00 status, +0x04 err_latch, +0x08 ftw_int, +0x0C ftw_out.
+    # Slot 0 is also aliased at the legacy addresses (0x10/0x14/0x18/0x20), so the
+    # single-resonance properties above report slot 0.
+    #--------------------------------------------------------------------------
+
+    _SLOT_BANK_BASE = 0x0040
+    _SLOT_BANK_STRIDE = 0x0010
+
+    @property
+    def nslots(self):
+        """Number of integrator slots implemented in the FPGA bitstream."""
+        return int(self._NSLOTS_HW)
+
+    def _slot_addr(self, slot, offset):
+        nslots = self.nslots
+        if not (0 <= slot < nslots):
+            raise ValueError(f"slot {slot} out of range (NSLOTS={nslots})")
+        return self._SLOT_BANK_BASE + slot * self._SLOT_BANK_STRIDE + offset
+
+    def status_slot(self, slot):
+        """Status flags dict for the given slot (locked/saturated/saturated_i/saturated_pi)."""
+        s = self._read(self._slot_addr(slot, 0x0))
+        return {
+            'locked': bool(s & 0x1),
+            'saturated': bool(s & 0x2),
+            'saturated_i': bool(s & 0x4),
+            'saturated_pi': bool(s & 0x8),
+        }
+
+    def locked_slot(self, slot):
+        """True if the given slot's error has been below deadband for 256 samples."""
+        return bool(self._read(self._slot_addr(slot, 0x0)) & 0x1)
+
+    def error_lsb_slot(self, slot):
+        """Last error value (LSB) latched for the given slot."""
+        return self._to_pyint(self._read(self._slot_addr(slot, 0x4)), 32)
+
+    def integrator_ftw_slot(self, slot):
+        """Integrator state in FTW units for the given slot."""
+        return self._to_pyint(self._read(self._slot_addr(slot, 0x8)), 32)
+
+    def integrator_hz_slot(self, slot):
+        """Integrator state in Hz for the given slot."""
+        return self.integrator_ftw_slot(slot) / FTW_PER_HZ
+
+    def correction_ftw_slot(self, slot):
+        """Applied FTW correction (incl. P term in PI mode) for the given slot."""
+        return self._to_pyint(self._read(self._slot_addr(slot, 0xC)), 32)
+
+    def correction_hz_slot(self, slot):
+        """Applied frequency correction in Hz for the given slot.
+
+        This is the per-resonance tracking output: each slot's value encodes that
+        resonance's accumulated B-field/temperature shift.
+        """
+        return self.correction_ftw_slot(slot) / FTW_PER_HZ
+
+    def get_status_all(self):
+        """Return a list of per-slot status dicts (one entry per implemented slot)."""
+        out = []
+        for slot in range(self.nslots):
+            st = self.status_slot(slot)
+            st.update({
+                'slot': slot,
+                'error_lsb': self.error_lsb_slot(slot),
+                'integrator_hz': self.integrator_hz_slot(slot),
+                'correction_hz': self.correction_hz_slot(slot),
+            })
+            out.append(st)
+        return out
 
     #--------------------------------------------------------------------------
     # METHODS

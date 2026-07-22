@@ -66,7 +66,8 @@ defaultparameters = dict(
 
 
 class RedPitaya(object):
-    cls_modules = [rp.HK, rp.AMS, rp.Scope, rp.Scan, rp.Sampler, rp.Asg0, rp.Asg1, rp.Fgen3, rp.LockIn, rp.OdmrFreqLock] + \
+    cls_modules = [rp.HK, rp.AMS, rp.Scope, rp.Scan, rp.Sampler, rp.Asg0, rp.Asg1, rp.Fgen3, rp.LockIn, rp.OdmrFreqLock,
+                   rp.OdmrMultitrack, rp.LockIn1] + \
                   [rp.Pwm] * 2 + [rp.Iq0, rp.Iq2] + [rp.Trig] + [rp.IIR] #+ [rp.Pid] * 3  # iq1 (module 6) removed to save FPGA resources
 
     def __init__(self, config=None,  # configfile is needed to store parameters. None simulates one

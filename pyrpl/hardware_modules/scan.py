@@ -253,6 +253,10 @@ ADDR_MARKER_X_WR_PTR = 0x30  # x-marker ring write pointer (index in LSB BRAM)
 ADDR_MARKER_X_COUNT  = 0x34  # total x markers written since reset
 ADDR_MARKER_Y_WR_PTR = 0x38  # y-marker ring write pointer (index in MSB BRAM)
 ADDR_MARKER_Y_COUNT  = 0x3C  # total y markers written since reset
+# Hop-boundary marker streaming (multi-resonance monitoring, Phase B-stream):
+# tick -> LSB bank, current_step -> MSB bank, at the shared hop ring index.
+ADDR_HOP_WR_PTR      = 0x40  # hop-marker ring write pointer (index in LSB/MSB BRAM)
+ADDR_HOP_COUNT       = 0x44  # total hop markers written since reset
 BRAM_LSB_BASE_ADDR = 0x10000  # As per Verilog: Module Base + 0x10000
 BRAM_MSB_BASE_ADDR = 0x20000  # As per Verilog: Module Base + 0x20000
 BRAM_DATA3_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000 (sample counts or stream data)
@@ -261,10 +265,12 @@ BRAM_DATA3_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000 (sample c
 CONTROL_START_BIT = 0
 CONTROL_STOP_BIT = 1
 CONTROL_RESET_BIT = 2
+CONTROL_CONTINUOUS_BIT = 3  # latched with START: continuous/loop hopping (no S_DONE)
 
 # Status Register Bits
 STATUS_BUSY_BIT = 0
 STATUS_DONE_BIT = 1
+STATUS_CONTINUOUS_BIT = 2  # read-back of reg_continuous (continuous/loop mode active)
 
 
 class CyclesProperty(FloatProperty):
@@ -338,6 +344,12 @@ class Scan(HardwareModule):
     done = BoolRegister(ADDR_STATUS, bit=STATUS_DONE_BIT,
                         doc="Read-only: True if a sweep has finished.")
 
+    continuous = BoolRegister(ADDR_STATUS, bit=STATUS_CONTINUOUS_BIT,
+                              doc="Read-only: True while the scan FSM is in "
+                                  "continuous/loop hopping mode (started via "
+                                  "start(continuous=True)). In this mode busy stays "
+                                  "True and done never asserts until stop()/reset().")
+
     current_step = IntRegister(ADDR_CURRENT_STEP, bits=MAX_STEPS_BITS,
                                doc="Read-only: The index of the step currently "
                                    "being processed (or the last step processed).")
@@ -381,36 +393,47 @@ class Scan(HardwareModule):
                                       "'ftw_corr' for 32-bit FTW correction from ODMR tracker (stream only).")
 
     # ---------------- Streaming (32-bit @ ~31 kHz) ----------------
-    def _stream_ctrl_write(self, enable=None, reset=False, marker=None):
+    def _stream_ctrl_write(self, enable=None, reset=False, marker=None, hop=None,
+                           dual=None, marked=None):
         """Drive the streaming control register (``ADDR_STREAM_CONTROL``).
 
         Register layout (write side):
         - bit 0 (``ENABLE``): 1 = enable streaming; 0 = disable.
         - bit 1 (``RESET``): write-one-to-pulse reset of the stream engine
-        (clears stream pointers/counters *and* the position-marker rings in the
-        FPGA). Hardware clears/de-latches it.
-        - bit 2 (``MARKER``): 1 = enable position-marker capture (MODE 3); 0 =
+        (clears stream pointers/counters *and* the position-/hop-marker rings in
+        the FPGA). Hardware clears/de-latches it.
+        - bit 2 (``MARKER``): 1 = enable x/y position-marker capture (MODE 3); 0 =
         disable. Markers only matter while streaming is enabled.
+        - bit 3 (``HOP``): 1 = enable hop-boundary marker capture (multi-resonance
+        monitoring); 0 = disable. Mutually exclusive with bit 2 (both reuse the
+        LSB/MSB marker banks).
+        - bit 4 (``DUAL``): 1 = enable dual-quantity self-describing streaming
+        (writes [err, corr, step] triplets into the data3 ring per demod strobe,
+        overriding INPUT_SELECT for the stream engine); 0 = legacy single-word.
+        In dual mode the hop-marker ring is not needed (the step label is inline).
 
         Read-modify-write behaviour:
         - If ``enable`` is ``None``, the current enable state (bit 0) is preserved.
         This lets callers issue a reset pulse without unintentionally toggling
         the stream.
         - If ``enable`` is ``True``/``False``, bit 0 is explicitly set/cleared.
-        - If ``marker`` is ``None``, the current marker state (bit 2) is preserved;
-        otherwise bit 2 is explicitly set/cleared.
+        - If ``marker``/``hop`` is ``None``, the current state of that bit is
+        preserved; otherwise it is explicitly set/cleared.
         - If ``reset`` is ``True``, bit 1 is OR'ed in to request a reset pulse.
 
         Args:
         enable: If ``True`` enable streaming; if ``False`` disable streaming;
         if ``None`` (default) keep the current enable state (bit 0).
         reset: If ``True``, pulse the RESET bit (bit 1). Defaults to ``False``.
-        marker: If ``True`` enable / ``False`` disable marker capture (bit 2);
-        if ``None`` (default) keep the current marker state.
+        marker: If ``True`` enable / ``False`` disable x/y marker capture (bit 2);
+        if ``None`` (default) keep the current state.
+        hop: If ``True`` enable / ``False`` disable hop-marker capture (bit 3);
+        if ``None`` (default) keep the current state.
         """
         val = 0
         cur = None
-        if enable is None or marker is None:
+        if (enable is None or marker is None or hop is None or dual is None
+                or marked is None):
             # Read-modify-write to preserve unspecified level bits
             cur = self._read(ADDR_STREAM_CONTROL)
         if enable is None:
@@ -421,6 +444,22 @@ class Scan(HardwareModule):
             val |= (cur & 0x4)
         else:
             val |= 0x4 if marker else 0x0
+        if hop is None:
+            val |= (cur & 0x8)
+        else:
+            val |= 0x8 if hop else 0x0
+        if dual is None:
+            val |= (cur & 0x10)
+        else:
+            val |= 0x10 if dual else 0x0
+        # bit 5 (MARKED): continuous uniform-rate dead-time-aware stream (writes
+        # [err, corr, state] triplets on a free-running /4096 tick; state = step when
+        # live else DEAD sentinel). Mutually exclusive with DUAL (FPGA gives MARKED
+        # priority); the step label is inline so no hop-marker ring is used.
+        if marked is None:
+            val |= (cur & 0x20)
+        else:
+            val |= 0x20 if marked else 0x0
         if reset:
             val |= 0x2
         self._write(ADDR_STREAM_CONTROL, val)
@@ -882,6 +921,489 @@ class Scan(HardwareModule):
             self.parent.stop_stream_server()
         logger.info("Mapped (marker) streaming stopped.")
 
+    # ---- x/y markers ON a self-describing (dual/marked) stream (2D multi-res scan) --
+    # The multi-resonance tracker runs a continuous self-describing stream (dual or
+    # marked): [err, corr, step] triplets in the data3 ring, so the resonance label
+    # travels inline and the ram_lsb/ram_msb marker banks are FREE. A 2D motor scan
+    # can therefore capture KDC x/y position markers in those free banks WHILE the
+    # tracker keeps hopping -- the composition the "dedicated 4th bank" note
+    # anticipated, needing no 4th bank precisely because dual/marked keep the label
+    # inline (the earlier caveat only applied to single-word hop markers, which use
+    # ram_msb for the step label). This is enabled via ``hop_stream_start(...,
+    # xy_markers=True)``, which RESETS the stream so demod word 0 aligns with marker 0
+    # (the continuous-hop FSM + per-slot lock integrators are separate from the stream
+    # engine, so the reset does not perturb the lock).
+    #
+    # NOTE on marker units: in dual/marked mode STREAM_SAMPLES -- and hence the marker
+    # values -- count WORDS (3 per [err, corr, step] triplet), not demod samples. Use
+    # :meth:`markers_to_triplet_index` (``w // 3``) to get the triplet (time-sample)
+    # index for slicing a reconstructed per-resonance trace. In single-word mapped
+    # streaming (``mapped_stream_start`` with 'demod'/'ftw_corr') the markers are
+    # already sample indices -- do NOT divide there.
+    @staticmethod
+    def markers_to_triplet_index(markers):
+        """Convert x/y marker WORD indices to triplet (time-sample) indices.
+
+        In the self-describing dual/marked streams three words ([err, corr, step])
+        are written per demod period, so the free-running sample counter -- and hence
+        the x/y marker values captured by ``hop_stream_start(..., xy_markers=True)`` --
+        advance by 3 per time sample. Floor-dividing by 3 maps a marker to the triplet
+        (quantization <= 1 triplet ~ 32.8 us, negligible against a spatial bin), which
+        is the correct index into a per-resonance trace from
+        :meth:`reconstruct_marked_series` / :meth:`reconstruct_dual_hop_series`.
+
+        Do NOT use this for single-word mapped streaming (demod/ftw_corr), where the
+        markers are already sample indices.
+        """
+        return np.asarray(markers, dtype=np.int64) // 3
+
+    # --------- Hop-boundary marker streaming (multi-resonance monitoring) ---------
+    # The live resonance's correction/error keeps flowing through the unchanged push
+    # stream (data3 ring). In addition, every time the FPGA scan FSM advances
+    # current_step (an LO hop) the pair (tick = stream sample index, current_step) is
+    # recorded into a hop-marker ring (tick in the LSB bank, step in the MSB bank).
+    # Because the data ring and the markers share the one free-running sample counter,
+    # the markers partition the continuous stream into segments, each labelled by the
+    # resonance live in it -- the deterministic (tick, resonance) -> value contract of
+    # Section 11. The scan FSM drives the hops while the stream runs concurrently.
+    # See docs/developer_guide/multi_resonance_tracking.md (Section 11, Phase B-stream).
+    def hop_stream_start(self, input_source="ftw_corr", poll_us=200,
+                         ring_bytes=0, coalesce_us=0, force_recompile=False,
+                         xy_markers=False):
+        """Start hop-marker streaming for multi-resonance monitoring.
+
+        Like :meth:`push_stream_start` (continuous push stream of the live
+        resonance's correction/error) but additionally enables FPGA hop-marker
+        capture, so :meth:`read_hop_markers` returns the (tick, current_step) pairs
+        at each LO hop. Run the scan FSM concurrently (configure ``num_steps`` etc.
+        and call :meth:`start`) so ``current_step`` actually advances and drives the
+        hops; the FSM's accumulator BRAM writes are suppressed while streaming.
+
+        Args:
+            input_source (str): 'ftw_corr' (per-resonance correction, the usual
+                monitoring quantity), 'demod' (per-resonance error), or 'dual'
+                (self-describing [err, corr, step] triplet stream for simultaneous
+                4-trace reconstruction; no hop-marker ring is used, the step label
+                is inline -- decode with :meth:`reconstruct_dual_hop_series`).
+            poll_us, ring_bytes, coalesce_us, force_recompile: see
+                :meth:`push_stream_start`.
+            xy_markers (bool): for 'dual'/'marked' only -- also capture KDC x/y
+                position markers in the (free) LSB/MSB banks for a 2D multi-resonance
+                motor scan. The reset aligns demod word 0 with the marker origin; read
+                the markers with :meth:`read_x_markers` / :meth:`read_y_markers` (WORD
+                indices; use :meth:`markers_to_triplet_index`).
+
+        Returns:
+            StreamClient: the background push receiver.
+        """
+        dual = (input_source == "dual")
+        marked = (input_source == "marked")
+        if not (dual or marked) and input_source not in ("demod", "ftw_corr"):
+            logger.warning("Hop streaming supports 'demod', 'ftw_corr', 'dual' and "
+                           "'marked' only; using 'ftw_corr'.")
+            input_source = "ftw_corr"
+        # 0. ensure no other consumer is mid-stream on this single-stream board
+        self._teardown_existing_push_stream("hop_stream_start")
+        # 1. select input; enable stream. Single-word modes use the hop-marker ring
+        #    (tick/step in the LSB/MSB banks). Dual (bit4) and marked (bit5) are
+        #    self-describing (step is inline in each triplet) and need no marker ring.
+        #    Marked additionally emits dead-time samples on a free-running tick so the
+        #    PC timeline is uniform/exact (decode with reconstruct_marked_series).
+        #    Disable x/y position markers (mutually exclusive, same banks).
+        if not (dual or marked):
+            self.input_select = input_source
+        # xy_markers: capture KDC x/y position markers in the (free) LSB/MSB banks
+        # alongside a self-describing dual/marked stream (2D multi-resonance motor
+        # scan). Only valid for dual/marked (single-word modes need those banks for
+        # the hop-marker ring). The reset (bit1) here aligns demod word 0 with the
+        # marker origin, so accumulated words and marker indices share one axis.
+        want_xy = bool(xy_markers) and (dual or marked)
+        if xy_markers and not (dual or marked):
+            logger.warning("hop_stream_start: xy_markers only supported with 'dual'/"
+                            "'marked' (self-describing) sources; ignoring.")
+        self._stream_ctrl_write(enable=True, reset=True, marker=want_xy,
+                                hop=(not (dual or marked)), dual=dual, marked=marked)
+        # 2. reset PC-side hop-marker read state (FPGA counters are 0 after the reset)
+        self._hop_rd_ptr = 0
+        self._hop_total_read = 0
+        self._hop_active = (not (dual or marked))
+        self._dual_active = dual
+        self._marked_active = marked
+        # x/y position-marker read state (only active when want_xy). read_x_markers /
+        # read_y_markers gate on _mapped_active; the markers are WORD indices here
+        # (3 words/triplet) -- convert with markers_to_triplet_index.
+        self._marker_x_rd_ptr = 0
+        self._marker_x_total_read = 0
+        self._marker_y_rd_ptr = 0
+        self._marker_y_total_read = 0
+        self._mapped_active = want_xy
+        # 3. start the push receiver (same infra as push_stream_start)
+        port = self.parent.ensure_stream_server(force_recompile=force_recompile)
+        host = self.parent.parameters['hostname']
+        self._push_rx = StreamClient(host, port, addr_base=self.addr_base,
+                                     poll_us=poll_us, ring_bytes=ring_bytes,
+                                     coalesce_us=coalesce_us)
+        self._push_rx.start()
+        self._push_input = input_source
+        logger.info("Hop-marker streaming started (%s) from %s:%d",
+                    input_source, host, port)
+        return self._push_rx
+
+    def hop_stream_read(self):
+        """All stream samples received since the last call (see push_stream_read).
+
+        Accumulate every chunk into one contiguous array (index 0 = first sample of
+        the session) so the absolute hop-marker ticks line up, then reconstruct with
+        :meth:`reconstruct_hop_series`.
+        """
+        return self.push_stream_read()
+
+    def read_hop_markers(self):
+        """Return new hop markers (tick, step) pairs recorded since the last call.
+
+        Wrap-aware, pointer-tracked (mirrors :meth:`read_x_markers`). Both rings are
+        read in lockstep at the same indices.
+
+        Returns:
+            (ticks, steps): two int64 np.ndarrays of equal length. ``ticks[k]`` is
+            the absolute stream sample index at which ``current_step`` became
+            ``steps[k]`` (i.e. the first sample of that segment). Empty if not
+            hop-streaming or no new markers.
+        """
+        empty = np.array([], dtype=np.int64)
+        if not getattr(self, '_hop_active', False):
+            return empty, empty
+        vals = self._reads(ADDR_HOP_WR_PTR, 2)  # wr_ptr (0x40), count (0x44)
+        wr_ptr, total_written = int(vals[0]), int(vals[1])
+        depth = 2 ** MAX_STEPS_BITS
+        total_read = int(getattr(self, '_hop_total_read', 0))
+        delta = (total_written - total_read) & 0xFFFFFFFF
+        if delta >= depth:
+            logger.warning("Hop-marker ring overflow (>= %d markers since last read); "
+                           "drained too slowly. Resyncing; some markers lost.", depth)
+            self._hop_rd_ptr = wr_ptr
+            self._hop_total_read = total_written
+            return empty, empty
+        rd = int(getattr(self, '_hop_rd_ptr', 0)) % depth
+        avail = (wr_ptr - rd) if wr_ptr >= rd else ((depth - rd) + wr_ptr)
+        if avail == 0:
+            return empty, empty
+
+        def _read_ring(base):
+            first_len = min(avail, depth - rd)
+            segs = [self._reads(base + rd * 4, first_len)]
+            rem = avail - first_len
+            if rem > 0:
+                segs.append(self._reads(base, rem))  # wrapped segment
+            if len(segs) > 1:
+                arr = np.concatenate([np.asarray(s, dtype=np.uint32) for s in segs])
+            else:
+                arr = np.asarray(segs[0], dtype=np.uint32)
+            return arr.astype(np.int64)
+
+        ticks = _read_ring(BRAM_LSB_BASE_ADDR)
+        steps = _read_ring(BRAM_MSB_BASE_ADDR)
+        self._hop_rd_ptr = (rd + avail) % depth
+        self._hop_total_read = total_read + avail
+        return ticks, steps
+
+    def hop_stream_stop(self, stop_server=False):
+        """Stop the push receiver and disable streaming + hop/xy-marker capture."""
+        rx = getattr(self, '_push_rx', None)
+        if rx is not None:
+            rx.stop()
+        self._stream_ctrl_write(enable=False, hop=False, dual=False, marked=False,
+                                marker=False)
+        self._hop_active = False
+        self._dual_active = False
+        self._marked_active = False
+        self._mapped_active = False
+        if stop_server:
+            self.parent.stop_stream_server()
+        logger.info("Hop-marker streaming stopped.")
+
+    def continuous_hop_start(self, nslots, input_source="ftw_corr",
+                             dwell_time=None, settling_time=None,
+                             trigger_length=None, poll_us=200, ring_bytes=0,
+                             coalesce_us=0, force_recompile=False):
+        """Start indefinite hardware-driven multi-resonance hopping + monitoring.
+
+        One call sets up the complete continuous tracker on the FPGA: it starts the
+        hop-marker push stream and then puts the scan FSM into continuous/loop mode
+        so it cycles ``current_step`` 0..nslots-1 **forever** (one LO-hop trigger per
+        step, wrapping at the last resonance) until :meth:`continuous_hop_stop`. No
+        software re-arming — the hop source is entirely on the FPGA. The per-channel
+        freeze/settle, cal-slot selection and per-slot integrators all follow
+        ``current_step`` as in the finite case.
+
+        The push stream + hop markers run concurrently and share the demod sample
+        counter, so the PC reconstructs deterministic per-resonance traces with
+        :meth:`read_hop_markers` + :meth:`reconstruct_hop_series`. For *indefinite*
+        runs, drain markers (``read_hop_markers``) and stream
+        (``hop_stream_read``) frequently and process them incrementally rather than
+        accumulating one ever-growing array (the 32-bit sample tick wraps after
+        ~39 h; use wrap-safe deltas).
+
+        Args:
+            nslots (int): number of resonances N -> written to ``num_steps`` (the
+                loop length). Must match the LO JUMP_LIST length.
+            input_source (str): 'ftw_corr' (per-resonance correction, default),
+                'demod' (per-resonance error), or 'dual' (self-describing
+                [err, corr, step] triplet stream -> simultaneous 4-trace
+                reconstruction via :meth:`reconstruct_dual_hop_series`).
+            dwell_time, settling_time, trigger_length (float|None): scan timing in
+                seconds; if given, applied before starting (controls the per-step
+                live time / LO-settle / trigger pulse). If None, the current values
+                are kept. Use the bench-verified config timing (trigger 50 us,
+                settling 100 us, Windfreak t~1 ms) for clean JUMP_LIST wrapping.
+            poll_us, ring_bytes, coalesce_us, force_recompile: see
+                :meth:`push_stream_start`.
+
+        Returns:
+            StreamClient: the background push receiver.
+        """
+        if self.busy:
+            logger.warning("Scan module is already busy; stop it before starting "
+                           "continuous hopping. Ignoring.")
+            return None
+        if nslots is not None:
+            self.num_steps = int(nslots)
+        if dwell_time is not None:
+            self.dwell_time = dwell_time
+        if settling_time is not None:
+            self.settling_time = settling_time
+        if trigger_length is not None:
+            self.trigger_length = trigger_length
+        # Start the stream + hop markers first (resets the data/marker rings and
+        # brings up the ARM push server), then start the indefinite hop loop so
+        # current_step begins advancing and driving the hops.
+        rx = self.hop_stream_start(input_source=input_source, poll_us=poll_us,
+                                   ring_bytes=ring_bytes, coalesce_us=coalesce_us,
+                                   force_recompile=force_recompile)
+        self.start(continuous=True)
+        logger.info("Continuous hop tracking started: N=%d, source=%s, dwell=%.1f us.",
+                    self.num_steps, input_source, self.dwell_time * 1e6)
+        return rx
+
+    def continuous_hop_stop(self, stop_server=False):
+        """Stop continuous hopping and the hop-marker stream (inverse of
+        :meth:`continuous_hop_start`)."""
+        self.stop()  # leave continuous/loop mode (clears reg_continuous on the FPGA)
+        self.hop_stream_stop(stop_server=stop_server)
+        logger.info("Continuous hop tracking stopped.")
+
+    @staticmethod
+    def _ffill(a):
+        """Forward-fill NaNs in a 1-D float array (zero-order hold).
+
+        Positions before the first non-NaN value stay NaN.
+        """
+        a = np.asarray(a, dtype=np.float64)
+        valid = ~np.isnan(a)
+        if not valid.any():
+            return a.copy()
+        idx = np.where(valid, np.arange(a.size), 0)
+        np.maximum.accumulate(idx, out=idx)
+        out = a[idx]
+        first_valid = int(np.argmax(valid))
+        out[:first_valid] = np.nan
+        return out
+
+    @classmethod
+    def reconstruct_hop_series(cls, values, ticks, steps, nslots=None, to_hz=False):
+        """Reconstruct per-resonance traces on the common tick axis (Section 11).
+
+        Implements the deterministic fresh-only + zero-order-hold reconstruction:
+        the hop markers partition the stream into segments labelled by resonance;
+        each resonance's trace carries its *fresh* samples while it is live and the
+        *held* (ZOH) value while it is parked. NaN is reserved for transport loss
+        only (a dropped sample inside a live dwell stays NaN); samples before a
+        resonance's first dwell are NaN (no data yet).
+
+        Args:
+            values (np.ndarray): the full contiguous stream (float64, NaN = transport
+                loss), index 0 = first sample of the session. Concatenate every
+                :meth:`hop_stream_read` chunk.
+            ticks (array-like): hop-marker ticks from :meth:`read_hop_markers`.
+            steps (array-like): hop-marker step values (same length as ticks).
+            nslots (int): number of resonances. Default: ``max(steps) + 1``.
+            to_hz (bool): if True, convert FTW values to Hz (use for 'ftw_corr').
+
+        Returns:
+            np.ndarray of shape (nslots, len(values)): per-resonance trace on the
+            common tick axis. Row r is resonance r's correction/error over time.
+        """
+        values = np.asarray(values, dtype=np.float64)
+        n = values.size
+        ticks = np.asarray(ticks, dtype=np.int64)
+        steps = np.asarray(steps, dtype=np.int64)
+        if nslots is None:
+            nslots = int(steps.max()) + 1 if steps.size else 1
+        out = np.full((nslots, n), np.nan, dtype=np.float64)
+        if ticks.size == 0:
+            return out / FTW_PER_HZ if to_hz else out
+
+        # Segment k spans [ticks[k], ticks[k+1]) (last runs to n), labelled steps[k].
+        bounds = np.concatenate([ticks, [n]])
+        live = [np.zeros(n, dtype=bool) for _ in range(nslots)]
+        for k in range(ticks.size):
+            a = max(0, int(bounds[k]))
+            b = min(n, int(bounds[k + 1]))
+            s = int(steps[k])
+            if 0 <= s < nslots and b > a:
+                out[s, a:b] = values[a:b]   # fresh samples (transport-loss NaN kept)
+                live[s][a:b] = True
+
+        for r in range(nslots):
+            filled = cls._ffill(out[r])              # ZOH across parked regions
+            loss = live[r] & np.isnan(values)        # transport loss inside live dwell
+            filled[loss] = np.nan                    # ...stays NaN, not held
+            out[r] = filled
+
+        return out / FTW_PER_HZ if to_hz else out
+
+    @classmethod
+    def reconstruct_dual_hop_series(cls, words, nslots=None, to_hz_corr=True):
+        """Reconstruct 4 per-resonance traces from a dual-quantity (self-describing)
+        stream (FPGA STREAM_CONTROL[4]).
+
+        Dual mode writes three words per demod strobe into the data3 ring:
+        ``[err, corr, step]``. This reshapes the contiguous word stream to (-1, 3),
+        uses the inline ``step`` column to label each sample's resonance, and builds
+        per-resonance error and correction traces with the same fresh-while-live +
+        zero-order-hold semantics as :meth:`reconstruct_hop_series` (NaN reserved for
+        transport loss inside a live dwell). Because the label travels with the value
+        in one ring, value and label can never desync (no separate marker channel).
+
+        Args:
+            words (np.ndarray): contiguous int32 words as float64 (NaN = transport
+                loss), index 0 = first word of the session. Concatenate every
+                :meth:`hop_stream_read` chunk. Trailing 1-2 words (an incomplete
+                triplet at the read boundary) are dropped.
+            nslots (int): number of resonances N. Default: max finite step + 1.
+            to_hz_corr (bool): convert the correction column from FTW to Hz.
+
+        Returns:
+            dict: ``{'err': (N, T) float64 (raw LSB),
+                     'corr': (N, T) float64 (Hz if to_hz_corr else FTW)}`` where
+            T is the number of complete triplets received.
+        """
+        words = np.asarray(words, dtype=np.float64).ravel()
+        n3 = (words.size // 3) * 3
+        if n3 == 0:
+            z = np.full((int(nslots) if nslots else 1, 0), np.nan, dtype=np.float64)
+            return {'err': z, 'corr': z.copy()}
+        trip = words[:n3].reshape(-1, 3)
+        err_col, corr_col, step_raw = trip[:, 0], trip[:, 1], trip[:, 2]
+        T = trip.shape[0]
+
+        # The resonance label is piecewise-constant (one value per dwell), so a lost
+        # step word is recovered by zero-order hold from the preceding sample.
+        step_filled = cls._ffill(step_raw)
+        finite = np.isfinite(step_filled)
+        step_int = np.where(finite, np.rint(step_filled), -1).astype(np.int64)
+        if nslots is None:
+            nslots = (int(step_int[step_int >= 0].max()) + 1
+                      if np.any(step_int >= 0) else 1)
+        nslots = int(nslots)
+
+        # Alignment guard: legal step labels are [0, nslots). Out-of-range finite
+        # labels indicate a word-level misalignment (should never happen).
+        bad = finite & ((step_int < 0) | (step_int >= nslots))
+        if np.any(bad):
+            logger.warning("Dual-stream reconstruct: %d/%d samples have out-of-range "
+                           "step labels (expected 0..%d); possible word "
+                           "misalignment.", int(bad.sum()), T, nslots - 1)
+
+        out_err = np.full((nslots, T), np.nan, dtype=np.float64)
+        out_corr = np.full((nslots, T), np.nan, dtype=np.float64)
+        for r in range(nslots):
+            live = (step_int == r)
+            e = np.full(T, np.nan, dtype=np.float64); e[live] = err_col[live]
+            c = np.full(T, np.nan, dtype=np.float64); c[live] = corr_col[live]
+            ef = cls._ffill(e)                       # ZOH across parked regions
+            cf = cls._ffill(c)
+            ef[live & np.isnan(err_col)] = np.nan    # transport loss stays NaN
+            cf[live & np.isnan(corr_col)] = np.nan
+            out_err[r] = ef
+            out_corr[r] = cf
+        if to_hz_corr:
+            out_corr = out_corr / FTW_PER_HZ
+        return {'err': out_err, 'corr': out_corr}
+
+    @classmethod
+    def reconstruct_marked_series(cls, words, nslots=None, to_hz_corr=True):
+        """Reconstruct per-resonance traces from the MARKED-continuous stream
+        (FPGA STREAM_CONTROL[5]).
+
+        Marked mode writes a triplet ``[err, corr, state]`` on a FREE-RUNNING /4096
+        tick -- one sample EVERY demod period regardless of the per-hop freeze. So
+        unlike the dual stream (whose triplets are gated by the demod strobe, making
+        the settle/hop dead-time zero-width in the word stream and corrupting the PC
+        timeline), here every demod-period slot is present and the time axis is EXACT
+        and uniform: ``t[k] = k / (FPGA_CLK_HZ/4096)``. ``state`` is the active
+        resonance index (0..N-1) on LIVE samples, or a DEAD sentinel during the
+        per-hop settle/freeze (FPGA writes 32'hFFFFFFFF; the stream client may surface
+        it as -1 or 4294967295 depending on signedness -- both are handled here as
+        "not a valid step" -> dead).
+
+        Args:
+            words (np.ndarray): contiguous int32-as-float64 stream (NaN = transport
+                loss), index 0 = first word of the session. Concatenate every
+                :meth:`hop_stream_read` chunk. Trailing 1-2 words (an incomplete
+                triplet at the read boundary) are dropped.
+            nslots (int): number of resonances N. Default: max valid step + 1.
+            to_hz_corr (bool): convert the correction column from FTW to Hz.
+
+        Returns:
+            dict with (T = number of complete triplets = uniform samples at
+            FPGA_CLK_HZ/4096):
+              - ``'err'``  (N, T) float64, raw LSB: the live error of resonance r at
+                samples where it is live, NaN elsewhere (dead OR another resonance OR
+                transport loss). Fresh-only (NO zero-order hold) so the dead-time is
+                explicit.
+              - ``'corr'`` (N, T) float64, Hz (or FTW): live correction, same masking.
+              - ``'dead'`` (T,) bool: True where the sample is dead-time (settle/hop).
+              - ``'step'`` (T,) int64: resonance index per sample, or -1 for dead/loss.
+              - ``'sample_rate'`` float: FPGA_CLK_HZ/4096 (exact uniform rate).
+        """
+        words = np.asarray(words, dtype=np.float64).ravel()
+        n3 = (words.size // 3) * 3
+        fs = FPGA_CLK_HZ / 4096.0
+        if n3 == 0:
+            z = np.full((int(nslots) if nslots else 1, 0), np.nan, dtype=np.float64)
+            return {'err': z, 'corr': z.copy(),
+                    'dead': np.zeros(0, dtype=bool), 'step': np.zeros(0, dtype=np.int64),
+                    'sample_rate': fs}
+        trip = words[:n3].reshape(-1, 3)
+        err_col, corr_col, state_raw = trip[:, 0], trip[:, 1], trip[:, 2]
+        T = trip.shape[0]
+
+        # A state word is a valid step iff it is a finite, non-negative integer below
+        # nslots. The DEAD sentinel 0xFFFFFFFF surfaces as -1.0 (signed) or
+        # 4294967295.0 (unsigned); either way it fails the 0<=s<nslots test -> dead.
+        finite = np.isfinite(state_raw)
+        step_round = np.where(finite, np.rint(state_raw), -1.0)
+        if nslots is None:
+            valid_steps = step_round[finite & (step_round >= 0) & (step_round < 4096)]
+            nslots = int(valid_steps.max()) + 1 if valid_steps.size else 1
+        nslots = int(nslots)
+        live = finite & (step_round >= 0) & (step_round < nslots)
+        step_int = np.where(live, step_round, -1).astype(np.int64)
+        dead = finite & ~live          # finite state but not a valid step = dead-time
+        # (transport-loss samples: state is NaN -> neither live nor dead; step = -1)
+
+        out_err = np.full((nslots, T), np.nan, dtype=np.float64)
+        out_corr = np.full((nslots, T), np.nan, dtype=np.float64)
+        for r in range(nslots):
+            sel = (step_int == r) & np.isfinite(err_col)
+            out_err[r, sel] = err_col[sel]
+            out_corr[r, sel] = corr_col[sel]
+        if to_hz_corr:
+            out_corr = out_corr / FTW_PER_HZ
+        return {'err': out_err, 'corr': out_corr, 'dead': dead,
+                'step': step_int, 'sample_rate': fs}
+
     @staticmethod
     def slice_by_markers(demod, markers):
         """Slice a contiguous demod array into per-bin segments at marker indices.
@@ -950,11 +1472,24 @@ class Scan(HardwareModule):
         self._write(ADDR_CONTROL, control_val)
 
 
-    def start(self):
+    def start(self, continuous=False):
         """
         Starts the sweep sequence.
 
-        Checks for potential accumulator overflow before starting.
+        Args:
+            continuous (bool): If False (default), run a single finite sweep of
+                ``num_steps`` steps, then stop (``done`` asserts). If True, start
+                continuous/loop hopping: the FPGA FSM wraps ``step_counter``->0 at
+                the last step and keeps emitting LO-hop triggers + advancing
+                ``current_step`` (0..num_steps-1) **indefinitely** until
+                :meth:`stop`/:meth:`reset`. ``busy`` stays True and ``done`` never
+                asserts. Set ``num_steps`` = number of resonances N; run a push/hop
+                stream concurrently (see :meth:`continuous_hop_start`) to monitor the
+                per-resonance corrections. This is the hardware-driven hop source for
+                indefinite multi-resonance tracking (no software re-arming).
+
+        Checks for potential accumulator overflow before starting (skipped in
+        continuous mode, where streaming suppresses accumulation).
         """
         if self.busy:
             logger.warning("Scan module is already busy. Ignoring start command.")
@@ -964,10 +1499,18 @@ class Scan(HardwareModule):
         if self.done:
             self.reset()
 
-        self._check_overflow()
-        logger.info("Starting scan sweep with input source: %s...", self.input_select)
-        self._write_control_bit(CONTROL_START_BIT, True)
-        
+        if continuous:
+            # In continuous mode the data path is the concurrent push stream; the
+            # scan accumulator is suppressed, so the 64-bit overflow check is moot.
+            logger.info("Starting CONTINUOUS scan-loop hopping (num_steps=%d, "
+                        "input source: %s)...", self.num_steps, self.input_select)
+            self._write(ADDR_CONTROL,
+                        (1 << CONTROL_START_BIT) | (1 << CONTROL_CONTINUOUS_BIT))
+        else:
+            self._check_overflow()
+            logger.info("Starting scan sweep with input source: %s...", self.input_select)
+            self._write_control_bit(CONTROL_START_BIT, True)
+
 
     def stop(self):
         """

@@ -267,15 +267,9 @@ assign ps_sys_ack   = |(sys_cs & sys_ack);
 // Region 8 is now used by odmr_freq_lock_3comb module
 // (connections below in module instantiation)
 
-// Modules 9-15: Available for future expansion
-
-assign sys_rdata[ 9*32+:32] = 32'h0;
-assign sys_err  [ 9       ] =  1'b0;
-assign sys_ack  [ 9       ] =  1'b1;
-
-assign sys_rdata[10*32+:32] = 32'h0;
-assign sys_err  [10       ] =  1'b0;
-assign sys_ack  [10       ] =  1'b1;
+// Modules 11-15: Available for future expansion
+// Region 9 = odmr_multitrack (per-channel oscillator + freeze controller)
+// Region 10 = lock_in chain 1 (resonance 1)  -- both instantiated below
 
 assign sys_rdata[11*32+:32] = 32'h0;
 assign sys_err  [11       ] =  1'b0;
@@ -695,15 +689,58 @@ endgenerate
 //---------------------------------------------------------------------------------
 //  Scan Module
 
-// Dual-channel lock-in outputs
+// Dual-channel lock-in outputs (chain 0 = resonance 0)
 wire signed [31:0] demod_filtered_data1;
 wire               demod_filtered_tvalid1;
 wire signed [31:0] demod_filtered_data2;
 wire               demod_filtered_tvalid2;
 
+//---------------------------------------------------------------------------------
+//  Phase C: per-channel oscillator (region 9) + 2nd lock-in chain (region 10)
+//---------------------------------------------------------------------------------
+// odmr_multitrack outputs: active-channel references + per-channel freeze gate.
+wire signed [LUTBITS-1:0] osc_sin, osc_cos, osc_sin_shifted, osc_cos_shifted;
+wire        [1:0]         osc_aclken;       // NCH=2 per-channel clock-enable
+wire        [7:0]         osc_sel;          // active channel index
+wire                      osc_active;       // 1 = oscillator drives the path (else legacy iq0)
+wire                      osc_valid_window; // 1 = active demod chain unfrozen (live); 0 = in per-hop freeze (= 1 when osc disabled). Routed to scan.stream_live_i for marked-continuous stream tagging.
+
+// Reference mux: legacy iq0 when the oscillator is inactive (single-resonance,
+// proven path untouched), the per-channel oscillator when enabled.
+wire signed [LUTBITS-1:0] ref_sin         = osc_active ? osc_sin         : iq0_sin;
+wire signed [LUTBITS-1:0] ref_cos         = osc_active ? osc_cos         : iq0_cos;
+wire signed [LUTBITS-1:0] ref_sin_shifted = osc_active ? osc_sin_shifted : iq0_sin_shifted;
+wire signed [LUTBITS-1:0] ref_cos_shifted = osc_active ? osc_cos_shifted : iq0_cos_shifted;
+wire signed [LUTBITS-1:0] fm_mod_sig      = osc_active ? osc_sin         : iq0_sin;
+
+// 2nd lock-in chain (resonance 1)
+wire signed [31:0] demod1_filtered_data1;
+wire               demod1_filtered_tvalid1;
+wire signed [31:0] demod1_filtered_data2;
+wire               demod1_filtered_tvalid2;
+
+// Active resonance's demod (for the odmr error and the scan demod stream). When the
+// oscillator is inactive this is always chain 0 (legacy single-resonance behaviour).
+// REGISTERED: this breaks the cross-module combinational path osc_sel(reg_sw_sel) ->
+// odmr DSP datapath that dominated the Phase-C critical path; the 1-cycle latency is
+// negligible at the ~30.5 kHz demod rate, and the demod is piecewise-constant anyway.
+wire               use_ch1 = osc_active & osc_sel[0];
+reg  signed [31:0] active_demod_data1;
+reg                active_demod_tvalid1;
+always @(posedge adc_clk) begin
+  if (!adc_rstn) begin
+    active_demod_data1   <= 32'b0;
+    active_demod_tvalid1 <= 1'b0;
+  end else begin
+    active_demod_data1   <= use_ch1 ? demod1_filtered_data1   : demod_filtered_data1;
+    active_demod_tvalid1 <= use_ch1 ? demod1_filtered_tvalid1 : demod_filtered_tvalid1;
+  end
+end
+
 // ODMR frequency tracker outputs
 wire signed [31:0] ftw_correction;
-wire               ftw_correction_valid;        
+wire               ftw_correction_valid;
+wire        [11:0] scan_current_step;   // live scan step index (scan -> fgen3 cal-slot select)
 
 scan #(
     .MAX_STEPS_BITS (12),
@@ -717,10 +754,14 @@ scan #(
     // Data Inputs - ADC, IQ, demod, and FTW correction
     .adc_input_i   (adc_a),
     .iq_input_i    (inphase_iq_demod),
-    .demod_input_i (demod_filtered_data1),        // Using lock-in channel 1
-    .demod_input_valid_i (demod_filtered_tvalid1),
+    .demod_input_i (active_demod_data1),           // active resonance's lock-in ch1
+    .demod_input_valid_i (active_demod_tvalid1),
     .ftw_correction_i (ftw_correction),           // From ODMR freq lock
     .ftw_correction_valid_i (ftw_correction_valid),
+
+    // Live/dead level for marked-continuous stream mode: active demod chain unfrozen
+    // (= 1 when the multitrack oscillator is disabled, so the mode degenerates safely).
+    .stream_live_i (osc_valid_window),
 
     // External KDC101 position-step triggers (5V->3.3V level-shifted into free
     // expansion-P inputs). DIO7_P (exp_p_in[7]) carries the MW trigger out, so the
@@ -732,6 +773,7 @@ scan #(
 
     // Trigger Output
     .trigger_o     (scan_trigger_o),
+    .current_step_o (scan_current_step),   // live step index -> fgen3 cal-slot select
 
     // System Bus Interface (Port 5)
     .sys_addr      (sys_addr),
@@ -756,8 +798,9 @@ red_pitaya_3fgen #(
     .dac_a_o      (fgen3_dac_a),
     .dac_b_o      (fgen3_dac_b),
     .output_to_dsp_enable_o (fgen3_output_to_dsp_enable),
-    .fm_mod_in    (iq0_sin),          // Modulating signal from IQ0
+    .fm_mod_in    (fm_mod_sig),       // FM source: per-channel oscillator (or legacy iq0)
     .ftw_correction_i (ftw_correction), // Frequency correction from ODMR tracker
+    .current_step_i (scan_current_step[7:0]),  // hw slot select: follows the live LO-hop step (use active_slot_src=1)
 
     .sys_addr     (sys_addr),
     .sys_wdata    (sys_wdata),
@@ -787,13 +830,14 @@ lock_in #(
 ) i_lock_in (
     .clk_i        (adc_clk),
     .rstn_i       (adc_rstn),
+    .aclken_i     (osc_aclken[0]),  // freeze gate: resonance 0 chain (1 when osc inactive)
     .adc_input_i  (adc_a), // ADC input signal
 
-    // Reference signals from IQ0 module
-    .ref_signal_sin_i         (iq0_sin),
-    .ref_signal_cos_i         (iq0_cos),
-    .ref_signal_sin_shifted_i (iq0_sin_shifted),
-    .ref_signal_cos_shifted_i (iq0_cos_shifted),
+    // Reference signals: per-channel oscillator when active, else legacy IQ0
+    .ref_signal_sin_i         (ref_sin),
+    .ref_signal_cos_i         (ref_cos),
+    .ref_signal_sin_shifted_i (ref_sin_shifted),
+    .ref_signal_cos_shifted_i (ref_cos_shifted),
 
     // Dual-channel outputs
     .filtered_output1_o       (demod_filtered_data1),
@@ -820,16 +864,22 @@ lock_in #(
 
 odmr_freq_lock_1f #(
   .PHASEBITS   (FGEN3_PHASEBITS), // 32-bit phase accumulator
-  .MU_QFRAC    (24)               // Q8.24 gain format
+  .MU_QFRAC    (24),              // Q8.24 gain format
+  .NSLOTS      (2)                // N=2 per-resonance integrators (Phase B); match fgen3 NSLOTS
 ) i_odmr_freq_lock_1f (
   .clk_i       (adc_clk),
   .rstn_i      (adc_rstn),
 
-  // Demodulated error from lock_in channel 1
-  .err_i       (demod_filtered_data1),
-  .err_valid_i (demod_filtered_tvalid1),
+  // Demodulated error from the ACTIVE resonance's lock-in chain (chain 0 when the
+  // oscillator is inactive). The per-slot integrator is selected by current_step.
+  .err_i       (active_demod_data1),
+  .err_valid_i (active_demod_tvalid1),
 
-  // Output to 3FGEN
+  // Hardware "which resonance is live" index (from scan block): selects the active
+  // integrator slot when active_slot_src=1 (mirrors the fgen3 cal-slot routing).
+  .current_step_i (scan_current_step[7:0]),
+
+  // Output to 3FGEN (driven continuously from the active integrator slot)
   .ftw_correction_o       (ftw_correction),
   .ftw_correction_valid_o (ftw_correction_valid),
 
@@ -842,6 +892,76 @@ odmr_freq_lock_1f #(
   .sys_rdata   (sys_rdata[8*32 +: 32]),
   .sys_err     (sys_err[8]),
   .sys_ack     (sys_ack[8])
+);
+
+
+//---------------------------------------------------------------------------------
+//  Lock-In chain 1 (resonance 1) — Region 10
+//  Replicated demod chain for the 2nd tracked resonance. Frozen/clocked by the
+//  per-channel gate osc_aclken[1]; shares the active-channel references with chain 0.
+
+lock_in #(
+    .PHASEBITS    (PHASEBITS),
+    .LUTBITS      (LUTBITS)
+) i_lock_in_1 (
+    .clk_i        (adc_clk),
+    .rstn_i       (adc_rstn),
+    .aclken_i     (osc_aclken[1]),  // freeze gate: resonance 1 chain
+    .adc_input_i  (adc_a),
+
+    .ref_signal_sin_i         (ref_sin),
+    .ref_signal_cos_i         (ref_cos),
+    .ref_signal_sin_shifted_i (ref_sin_shifted),
+    .ref_signal_cos_shifted_i (ref_cos_shifted),
+
+    .filtered_output1_o       (demod1_filtered_data1),
+    .filtered_output1_valid_o (demod1_filtered_tvalid1),
+    .filtered_output2_o       (demod1_filtered_data2),
+    .filtered_output2_valid_o (demod1_filtered_tvalid2),
+
+    .sys_addr        (  sys_addr                   ),
+    .sys_wdata       (  sys_wdata                  ),
+    .sys_sel         (  sys_sel                    ),
+    .sys_wen         (  sys_wen[10]                ),
+    .sys_ren         (  sys_ren[10]                ),
+    .sys_rdata       (  sys_rdata[10*32+31:10*32]  ),
+    .sys_err         (  sys_err[10]                ),
+    .sys_ack         (  sys_ack[10]                )
+);
+
+//---------------------------------------------------------------------------------
+//  Multi-resonance modulation oscillator + freeze controller — Region 9
+//  N=2 per-channel phase accumulators + shared 17-bit LUT (active-channel
+//  sin/cos/sin_shifted/cos_shifted) + per-hop physical-settle freeze window. Drives
+//  the FM source (fm_mod_sig), both lock-in chains' references, and their freeze gates.
+
+odmr_multitrack #(
+  .NCH         (2),
+  .PHASEBITS   (PHASEBITS),
+  .LUTBITS     (LUTBITS),
+  .LUTSZ       (11)
+) i_odmr_multitrack (
+  .clk_i          (adc_clk),
+  .rstn_i         (adc_rstn),
+  .current_step_i (scan_current_step[7:0]),
+
+  .sin_o          (osc_sin),
+  .cos_o          (osc_cos),
+  .sin_shifted_o  (osc_sin_shifted),
+  .cos_shifted_o  (osc_cos_shifted),
+  .aclken_o       (osc_aclken),
+  .sel_o          (osc_sel),
+  .valid_window_o (osc_valid_window),
+  .osc_active_o   (osc_active),
+
+  .sys_addr    (sys_addr),
+  .sys_wdata   (sys_wdata),
+  .sys_sel     (sys_sel),
+  .sys_wen     (sys_wen[9]),
+  .sys_ren     (sys_ren[9]),
+  .sys_rdata   (sys_rdata[9*32 +: 32]),
+  .sys_err     (sys_err[9]),
+  .sys_ack     (sys_ack[9])
 );
 
 

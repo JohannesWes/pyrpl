@@ -226,6 +226,30 @@ set_false_path -from [get_clocks clk_fpga_0]  -to [get_clocks par_clk]
 set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2clk_out]
 set_false_path -from [get_clocks dac_clk_out] -to [get_clocks dac_2ph_out]
 
+############################################################################
+# ODMR freq-lock integrator MAC -- multicycle path                         #
+#                                                                          #
+# The integral-controller datapath in i_odmr_freq_lock_1f                  #
+# (reg_mu_q*err -> +ftw_corr_active -> saturate) is a deep unpipelined      #
+# 32x32 multiply + 64-bit accumulate + saturate that cannot close in one   #
+# 8 ns adc_clk period (~21 ns post-route -> latent WNS ~-13 ns that         #
+# corrupted the correction on unlucky placements). The RTL holds the        #
+# operands stable for the whole 4096-clk demod period and DELAYS the        #
+# integrator capture by MAC_DELAY=4 clocks (upd = err_valid_i delayed 4),   #
+# so the combinational result is sampled only after it has settled. These   #
+# multicycle declarations make that path a true 4-cycle path for STA.       #
+# NOTE: this constraint is only sound BECAUSE of the RTL capture delay; a   #
+# bare constraint on the original single-cycle capture would be a lie.      #
+# ftw_correction_o is intentionally NOT listed: it now only follows         #
+# ftw_out_r (a short single-cycle path).                                    #
+############################################################################
+set_multicycle_path -setup 4 -to [get_cells -hier -filter {NAME =~ *i_odmr_freq_lock_1f/ftw_corr_reg*}]
+set_multicycle_path -hold  3 -to [get_cells -hier -filter {NAME =~ *i_odmr_freq_lock_1f/ftw_corr_reg*}]
+set_multicycle_path -setup 4 -to [get_cells -hier -filter {NAME =~ *i_odmr_freq_lock_1f/ftw_out_r_reg*}]
+set_multicycle_path -hold  3 -to [get_cells -hier -filter {NAME =~ *i_odmr_freq_lock_1f/ftw_out_r_reg*}]
+set_multicycle_path -setup 4 -to [get_cells -hier -filter {NAME =~ *i_odmr_freq_lock_1f/flag_*_reg*}]
+set_multicycle_path -hold  3 -to [get_cells -hier -filter {NAME =~ *i_odmr_freq_lock_1f/flag_*_reg*}]
+
 ### SATA connector
 # set_property IOSTANDARD DIFF_HSTL_I_18 [get_ports {daisy_p_o[*]}]
 # set_property IOSTANDARD DIFF_HSTL_I_18 [get_ports {daisy_n_o[*]}]

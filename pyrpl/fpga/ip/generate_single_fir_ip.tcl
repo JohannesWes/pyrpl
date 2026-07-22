@@ -92,7 +92,7 @@ set_property -dict [list \
     CONFIG.S_DATA_Has_FIFO {true} \
     CONFIG.S_DATA_Has_TUSER {Not_Required} \
     CONFIG.M_DATA_Has_TUSER {Not_Required} \
-    CONFIG.Has_ACLKEN {false} \
+    CONFIG.Has_ACLKEN {true} \
     CONFIG.Has_ARESETn {false} \
 ] [get_ips $ip_name]
 

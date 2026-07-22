@@ -35,6 +35,7 @@ from .iq import Iq, Iq0, Iq2  # Iq0 and Iq2 are named classes (iq1/module 6 remo
 from .iir import IIR
 from .ams import AMS
 from .trig import Trig
-from .lock_in import LockIn
+from .lock_in import LockIn, LockIn1
 from .odmr_freq_lock import OdmrFreqLock
+from .odmr_multitrack import OdmrMultitrack
 #from .example_module import ExampleModule
