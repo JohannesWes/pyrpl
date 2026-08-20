@@ -17,6 +17,14 @@
 
 ## Problem Statement & Physical Context
 
+### ODMR Physics Background
+
+In our experiments the tracked resonance is an optically-detected magnetic resonance (ODMR) of nitrogen-vacancy centers in diamond, sitting somewhere in the **2.5–3.3 GHz** range and drifting slowly with temperature and magnetic field. Driven on resonance, the NV fluorescence shows a **Lorentzian dip on a positive baseline**; the resonance frequency is the location of that minimum. The Red Pitaya does not generate at GHz directly — it produces a frequency-modulated intermediate-frequency tone (~20 MHz) as an I/Q pair, which is **single-sideband upconverted to the microwave drive by an external IQ mixer and LO source**. Everything below is written in terms of the Red Pitaya IF frequency; the upconversion is a fixed offset and does not affect the loop.
+
+Rather than measuring the dip directly at DC, we frequency-modulate the drive at `f_m` and recover the fluorescence response with **lock-in demodulation at `f_m`**. This moves detection above the laser/technical `1/f` noise floor (the noise-reduction motivation for the whole scheme) and, because the constant baseline carries no power at `f_m`, the demodulated output is **automatically zero-referenced** — the positive Lorentzian offset is rejected. As a function of the center frequency `f₀`, the demodulated signal is the **derivative of the Lorentzian**: an odd-symmetric, dispersion-shaped discriminator with zero offset that **crosses zero exactly at the resonance frequency** and is linear in detuning near it. This is the error signal used below; the quadratic expansion of the Lorentzian that follows is just the small-detuning limit that makes this linear slope explicit.
+
+Because that zero-crossing marks the resonance, we can **lock the generated frequency to it with a control loop instead of repeatedly sweeping** the interval and re-fitting the dip. Locking tracks the resonance continuously and in real time, with no per-sweep dead time, which is what the rest of this document implements.
+
 ### The Physical System
 
 This implementation addresses **tracking a time-varying resonance frequency** in a physical system (e.g., optically-detected magnetic resonance in nitrogen-vacancy centers in diamond).
@@ -40,7 +48,7 @@ where $V_0$ is the baseline level, $C$ is the contrast, and $\sigma$ is the half
 For lock-in demodulation, the measured fluorescence signal is multiplied with the reference/modulation signal and low-pass filtered:
 
 $$
-    v_\mathrm{out} =  v_\mathrm{fl}(t) \cos(2 \pi f_m t) * h_\mathrm{LPF}(t)
+    v_\mathrm{out} =  v_\mathrm{fl}(t) \sin(2 \pi f_m t) * h_\mathrm{LPF}(t)
 $$
 
 Combining the above equations results in a sum of sinusoids at harmonics of the modulation frequency, convolved with the low-pass filter. The cutoff frequency of the filter is chosen well below `f_m`, so only the DC component remains:
@@ -62,9 +70,6 @@ In discrete time (sampled at ~30.5 kS/s after decimation), the demodulated signa
 $$
     e[n] = v_\mathrm{out}[n] = K_0 \cdot ((f_0(t) - f_r(t)) * h_\mathrm{LPF})[n]
 $$
-
-  e[n] ≈ K_0 × (h_LPF * (f_0 - f_r))[n]
-  ```
 
 ![Discriminator signal showing linear region around resonance](image-1.png)
 
