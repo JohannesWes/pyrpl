@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in the pyrpl repository.
 
 ## Project Overview
 
@@ -62,7 +62,6 @@ value = module.gain      # → TCP read from FPGA register
 
 **`pyrpl/fpga/`** - FPGA build system and Verilog source
 - `rtl/` contains Verilog modules (scan_new.v, red_pitaya_pid_block.v, etc.)
-- `red_pitaya_dsp.v` is the central routing/orchestration module
 - `Makefile` and TCL scripts drive Vivado compilation
 - Each hardware module occupies 64KB address space: `0x40300000 + module_num * 0x10000`
 
@@ -195,7 +194,8 @@ NaN = loss), `push_stream_iter()`, `push_stream_stats()`, `push_stream_stop()`.
 Implemented by `pyrpl/monitor_server/stream_server.c` (compiled natively on the
 board), `pyrpl/stream_client.py`, `pyrpl/stream_deploy.py`, and lazy
 `RedPitaya.ensure_stream_server()`. See
-`docs/developer_guide/scan_push_streaming.md` (includes qudi-integration notes).
+`docs/developer_guide/scan_data_streaming.md` and
+`docs/developer_guide/qudi_redpitaya_streaming_integration.md`.
 
 ### ODMR Frequency Lock Integration
 
@@ -231,6 +231,31 @@ Lock-in (demod) → odmr_freq_lock (Region 8) → fgen3 (FTW correction) → Sca
 - Implementation guide: `docs/developer_guide/odmr_freq_lock_implementation.md`
 - Module docstrings: `odmr_freq_lock.py`, `fgen3.py`
 - FPGA headers: `odmr_freq_lock_1f.v`, `red_pitaya_3fgen.v`
+
+### Hardware-Synchronized Motor Position Scanning (Scan MODE 3)
+
+A third scan-module mode for 2D motorized-stage scans that allocates the demod
+stream to spatial positions using **hardware** triggers instead of software
+timestamps. Both KDC101 controllers emit encoder-referenced "At Position Steps"
+TTL pulses (x = one per fast-axis bin, y = one per line); level-shifted into
+`exp_p_in[5]`/`exp_p_in[6]` (DIO5_P/DIO6_P; DIO7_P stays the MW trigger out),
+the FPGA edge-detects them and records the current
+demod sample index into marker rings (x in `ram_lsb`, y in `ram_msb`) sharing the
+demod ring's free-running sample counter. The PC slices the continuous push
+stream at the marker indices for exact data↔position allocation (no line shifts).
+
+**Key components:**
+- `scan_new.v` MODE 3: `STREAM_CONTROL` bit2 enables marker capture; new regs
+  `0x30`–`0x3C` (x/y marker wr_ptr + count); inputs `x_pos_trig_i`/`y_pos_trig_i`.
+- `scan.py`: `mapped_stream_start/read/stop`, `read_x_markers`, `read_y_markers`,
+  `slice_by_markers`.
+- qudi: `ScanMode.KDC_HW_SYNC`, `thorlabs_kdc101_kinesis.setup_position_trigger`
+  (pylablib `setup_kcube_trigio`/`trigpos`), `motor_scan/hw_sync_scan.py`
+  (`reconstruct_hw_sync_scan` + `HwSyncScanMixin`).
+- Tests: `pyrpl/test/test_scan_markers.py`,
+  `qudi-iqo-modules/tests/test_hw_sync_reconstruct.py`.
+
+**Documentation:** `docs/developer_guide/motor_position_sync_scan.md`
 
 ## Important Patterns
 
@@ -274,7 +299,7 @@ When editing attribute definitions:
    import logging
    logging.getLogger('pyrpl.redpitaya').setLevel(logging.DEBUG)
    ```
-3. Verify timing in Vivado reports: `pyrpl/fpga/out/post_route_timing_summary.rpt`
+3. Check Vivado reports, e.g. `pyrpl/fpga/out/post_route_timing_summary.rpt`
 4. Use SignalTap/ILA for live FPGA debugging (requires Vivado license)
 
 ## Common Gotchas
@@ -303,23 +328,3 @@ When editing attribute definitions:
 - Check for timing violations in Vivado reports after FPGA compilation
 - Verify no config file corruption after module changes
 
-## Future Improvements
-
-See `FUTURE_IMPROVEMENTS.md` for documented optimization opportunities and planned enhancements. This includes:
-- Performance optimizations (e.g., contiguous BRAM mapping for scan module)
-- Architecture improvements
-- Technical debt items
-
-When implementing features or fixes, check this file first to see if related improvements are already documented.
-
-## Branch Context
-
-Current branch: `scan_module_dev_johannes_filtering_tests`
-
-This branch contains active development on the Scan module, including:
-- Streaming data acquisition with optimized performance
-- Input source selection (ADC, IQ, demodulated)
-- BRAM-based data accumulation
-- Real-time overflow detection and handling
-
-Recent commits show work on scan module filtering, input signal selection, and code documentation tools.

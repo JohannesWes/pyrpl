@@ -11,7 +11,19 @@
       "Bash(cat:*)",
       "Bash(cmd //c make.bat)",
       "Bash(./make.bat)",
-      "Bash(./copy_and_make.bat)"
+      "Bash(./copy_and_make.bat)",
+      "Bash(ping -n 2 10.203.129.28)",
+      "Bash(\"C:\\\\Users\\\\aj92uwef\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe\" -c \"import paramiko; print\\('py310 paramiko', paramiko.__version__\\)\")",
+      "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=6 root@10.203.129.28 \"echo OK_CONNECTED; cat /opt/redpitaya/version.txt 2>/dev/null; cat /root/version.txt 2>/dev/null; uname -a; which gcc\")",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Add robust ARM-side push streaming for the scan module *)",
+      "Bash(../../qudi-core/venv/Scripts/python.exe -c ' *)",
+      "Bash(../../qudi-core/venv/Scripts/python.exe -c \"import rp_ssh; rp_ssh.run\\('rm -f /opt/pyrpl/stream_server_new.c /tmp/ss_test'\\)\")",
+      "Bash(../../qudi-core/venv/Scripts/python.exe test_ring_headroom.py)",
+      "Bash(../../qudi-core/venv/Scripts/python.exe test_gap_unit.py)",
+      "Bash(./venv/Scripts/python.exe scratch_test_instream_logic.py)",
+      "Bash(../../qudi-core/venv/Scripts/python.exe real_pyrpl_pushtest.py 10)",
+      "Bash(echo \"EXIT=$?\")"
     ],
     "deny": [],
     "ask": []
