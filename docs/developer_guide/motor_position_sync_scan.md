@@ -146,3 +146,27 @@ x markers are read from `ram_lsb` (`0x10000`), y markers from `ram_msb`
   output off during teardown.
 - A new `KDC_HW_SYNC` scan mode that reuses the existing line/snake orchestration
   but replaces software binning with marker-defined slicing.
+
+## Composition with multi-resonance tracking (KDC_HW_SYNC_MULTIRES)
+
+The single-resonance mode above streams one demod quantity into `ram_data3` and puts
+x/y markers in `ram_lsb`/`ram_msb`. A **2D scan while multi-resonance LO hopping is
+running** composes cleanly with **no FPGA change**, because the multi-resonance
+**marked** stream (`STREAM_CONTROL[5]`) is self-describing: it writes
+`[err, corr, state]` triplets into `ram_data3` with the resonance label INLINE, so the
+`ram_lsb`/`ram_msb` banks stay free for the KDC x/y markers. (This is why the earlier
+"2D needs a dedicated 4th bank" note — which assumed the single-word *hop*-marker mode,
+whose label lives in `ram_msb` — does not apply here.) `DIO7_P` continues to emit the
+LO-hop trigger *out* to the Windfreak while `DIO5_P`/`DIO6_P` capture the KDC pulses
+*in* — the pin map above already anticipated this.
+
+Enable with `Scan.hop_stream_start(input_source='marked', xy_markers=True)` (the reset
+aligns demod word 0 with marker 0). One caveat vs. single-res: `STREAM_SAMPLES` counts
+**words** (3 per triplet) in marked mode, so the marker values are word indices — divide
+by 3 (`Scan.markers_to_triplet_index`) to get the triplet/time-sample index into the
+reconstructed per-resonance traces. The PC then reconstructs 2N fresh-only traces
+(`reconstruct_marked_series`) and bins each by the (triplet) x-markers, exactly as here
+but for 4 quantities. qudi: `ScanMode.KDC_HW_SYNC_MULTIRES` +
+`MultiResonanceTrackingInterface.{enable_position_markers, read_position_markers,
+read_stream_words, reconstruct_mapped_traces}`; the motor scan takes over the tracker's
+running stream (tracking is configured/started in the Multi-Resonance ODMR GUI first).

@@ -263,6 +263,16 @@ This mode is documented separately in `docs/developer_guide/motor_position_sync_
 because it concerns motor-trigger wiring and scan re-binning rather than the
 core continuous data stream.
 
+The x/y position markers (`STREAM_CONTROL[2]`) also compose with the self-describing
+**dual/marked** multi-resonance streams (`STREAM_CONTROL[4]`/`[5]`): those carry the
+resonance label inline in `data3`, so `ram_lsb`/`ram_msb` are free for the x/y markers.
+Use `Scan.hop_stream_start(input_source='marked', xy_markers=True)` — this is the 2D
+multi-resonance mapped scan (`KDC_HW_SYNC_MULTIRES`), where each spatial bin gets both
+resonances' error + correction. In marked/dual mode the marker values are WORD indices
+(3 words per triplet); convert with `Scan.markers_to_triplet_index`. Note x/y markers
+remain mutually exclusive with the single-word **hop**-marker ring (`[3]`), which needs
+those same banks for its (tick, step) pairs.
+
 ## Tests And Diagnostics
 
 Streaming development tests are in `streaming_dev/`:
