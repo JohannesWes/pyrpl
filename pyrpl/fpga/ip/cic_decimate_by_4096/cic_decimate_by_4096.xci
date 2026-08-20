@@ -32,7 +32,7 @@
         "Output_Data_Width": [ { "value": "40", "value_src": "user", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "Use_Xtreme_DSP_Slice": [ { "value": "true", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "Use_Streaming_Interface": [ { "value": "true", "resolve_type": "user", "format": "bool", "usage": "all" } ],
-        "HAS_ACLKEN": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
+        "HAS_ACLKEN": [ { "value": "true", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "HAS_ARESETN": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "HAS_DOUT_TREADY": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ]
       },
@@ -72,7 +72,7 @@
         "C_M_AXIS_DATA_TDATA_WIDTH": [ { "value": "40", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_M_AXIS_DATA_TUSER_WIDTH": [ { "value": "1", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_HAS_DOUT_TREADY": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
-        "C_HAS_ACLKEN": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
+        "C_HAS_ACLKEN": [ { "value": "1", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_HAS_ARESETN": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ]
       },
       "project_parameters": {
@@ -102,6 +102,7 @@
     "boundary": {
       "ports": {
         "aclk": [ { "direction": "in", "driver_value": "0x1" } ],
+        "aclken": [ { "direction": "in", "driver_value": "0x1" } ],
         "s_axis_data_tdata": [ { "direction": "in", "size_left": "31", "size_right": "0", "driver_value": "0" } ],
         "s_axis_data_tvalid": [ { "direction": "in", "driver_value": "0x0" } ],
         "s_axis_data_tready": [ { "direction": "out", "driver_value": "0x0" } ],
@@ -195,6 +196,9 @@
           "mode": "slave",
           "parameters": {
             "POLARITY": [ { "value": "ACTIVE_HIGH", "value_src": "constant", "usage": "all" } ]
+          },
+          "port_maps": {
+            "CE": [ { "physical_name": "aclken" } ]
           }
         },
         "M_AXIS_DATA": {

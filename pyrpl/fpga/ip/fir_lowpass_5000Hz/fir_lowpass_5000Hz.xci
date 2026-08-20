@@ -74,7 +74,7 @@
         "S_CONFIG_Sync_Mode": [ { "value": "On_Vector", "resolve_type": "user", "usage": "all" } ],
         "S_CONFIG_Method": [ { "value": "Single", "resolve_type": "user", "usage": "all" } ],
         "Num_Reload_Slots": [ { "value": "1", "resolve_type": "user", "format": "long", "usage": "all" } ],
-        "Has_ACLKEN": [ { "value": "false", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
+        "Has_ACLKEN": [ { "value": "true", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "Has_ARESETn": [ { "value": "false", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "Reset_Data_Vector": [ { "value": "true", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "Blank_Output": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
@@ -145,7 +145,7 @@
         "C_FILTS_PACKED": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_LATENCY": [ { "value": "74", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_HAS_ARESETn": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
-        "C_HAS_ACLKEN": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
+        "C_HAS_ACLKEN": [ { "value": "1", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_DATA_HAS_TLAST": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_S_DATA_HAS_FIFO": [ { "value": "1", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_S_DATA_HAS_TUSER": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
@@ -188,6 +188,7 @@
     "boundary": {
       "ports": {
         "aclk": [ { "direction": "in" } ],
+        "aclken": [ { "direction": "in", "driver_value": "0x1" } ],
         "s_axis_data_tvalid": [ { "direction": "in", "driver_value": "0x0" } ],
         "s_axis_data_tready": [ { "direction": "out", "driver_value": "0x1" } ],
         "s_axis_data_tdata": [ { "direction": "in", "size_left": "39", "size_right": "0", "driver_value": "0" } ],
@@ -292,6 +293,9 @@
           "mode": "slave",
           "parameters": {
             "POLARITY": [ { "value": "ACTIVE_HIGH", "value_src": "constant", "usage": "all" } ]
+          },
+          "port_maps": {
+            "CE": [ { "physical_name": "aclken" } ]
           }
         },
         "S_AXIS_DATA": {
