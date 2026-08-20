@@ -1,239 +1,320 @@
-"""
-Analyze the combined CIC + FIR filter cascade in lock_in.v
+"""Compare both selectable 2 kHz FIRs, alone and after the lock-in CIC.
 
-CIC Decimator configuration (from cic_decimate_by_4096.xci):
-  - Number of stages (N): 5
-  - Differential delay (M): 2  
-  - Decimation rate (R): 4096
-  - Input sample rate: 125 MHz
-  - Output sample rate: 125 MHz / 4096 = 30.5176 kHz
+The CIC configuration is read from ``cic_decimate_by_4096.xci`` manually:
 
-The FIR filter (fir_lowpass_2000Hz) combines:
-  1. Lowpass filtering (2 kHz cutoff)
-  2. Inverse-sinc CIC droop compensation
+* five stages
+* differential delay two
+* decimation by 4096
+* 125 MHz input sample rate
 
-This script plots:
-  1. CIC frequency response (showing passband droop)
-  2. FIR frequency response
-  3. Combined CIC + FIR response (should be flat in passband)
+Both FIRs receive the same CIC output in ``lock_in.v``.  The cascade magnitude
+therefore differs only through their FIR coefficient sets.  The phase plot
+shows FIR phase only because this analytical CIC calculation models magnitude;
+the omitted CIC phase/delay is common to both selectable paths.  The step and
+group-delay panels likewise compare the selectable FIR sections directly.
 """
 
 import re
-import numpy as np
 from pathlib import Path
 
-# CIC parameters (from XCI)
-CIC_STAGES = 5       # N
-CIC_DELAY = 2        # M (differential delay)
-CIC_DECIMATION = 4096  # R
+import numpy as np
 
-# Sample rates
-FS_IN = 125e6                    # CIC input: 125 MHz
-FS_OUT = FS_IN / CIC_DECIMATION  # CIC output / FIR input: ~30.5 kHz
+
+CIC_STAGES = 5
+CIC_DELAY = 2
+CIC_DECIMATION = 4096
+
+FS_IN = 125e6
+FS_OUT = FS_IN / CIC_DECIMATION
 
 SCRIPT_DIR = Path(__file__).parent
-COE_PATH = SCRIPT_DIR / "fir_filter_coefs" / "fir_lowpass_2000Hz.coe"
-OUT_PNG = SCRIPT_DIR / "fir_lowpass_2000Hz_cic_cascade.png"
+COE_PATHS = {
+    "Minimum phase (register 0)": (
+        SCRIPT_DIR / "fir_filter_coefs" / "fir_lowpass_2000Hz.coe"
+    ),
+    "Linear phase (register 1)": (
+        SCRIPT_DIR / "fir_filter_coefs" / "fir_linear_phase_2000Hz.coe"
+    ),
+}
+OUT_PNG = SCRIPT_DIR / "fir_2kHz_cic_cascade_comparison.png"
 
 
 def load_coe_int_taps(path):
+    """Load the decimal integer tap vector from a Xilinx COE file."""
     text = path.read_text(encoding="utf-8", errors="ignore")
-    m = re.search(r"coefdata\s*=\s*(.*?)\s*;", text, flags=re.IGNORECASE | re.DOTALL)
-    if not m:
+    match = re.search(
+        r"coefdata\s*=\s*(.*?)\s*;", text, flags=re.IGNORECASE | re.DOTALL
+    )
+    if not match:
         raise RuntimeError(f"Could not find coefdata block in {path}")
-    nums = re.findall(r"[-+]?\d+", m.group(1))
-    return np.array([int(x) for x in nums], dtype=np.float64)
+    return np.array(
+        [int(value) for value in re.findall(r"[-+]?\d+", match.group(1))],
+        dtype=np.float64,
+    )
 
 
-def cic_response(f, fs_in, N, M, R):
-    """
-    Compute CIC decimator frequency response.
-    
-    H_CIC(f) = [sin(pi * M * f / fs_out) / sin(pi * f / fs_in)]^N
-    
-    where fs_out = fs_in / R
-    
-    At f=0, use L'Hopital: H_CIC(0) = (M * R)^N
-    """
-    fs_out = fs_in / R
-    H = np.zeros_like(f, dtype=np.float64)
-    
-    for i, freq in enumerate(f):
-        if np.isclose(freq, 0):
-            H[i] = float((M * R) ** N)
-        else:
-            num_arg = np.pi * M * freq / fs_out
-            den_arg = np.pi * freq / fs_in
-            num = np.sin(num_arg)
-            den = np.sin(den_arg)
-            if np.abs(den) < 1e-15:
-                H[i] = 0.0
-            else:
-                H[i] = (num / den) ** N
-    
-    return H
+def cic_response(frequency):
+    """Return the normalized CIC-decimator magnitude response."""
+    response = np.empty_like(frequency, dtype=np.float64)
+    zero = np.isclose(frequency, 0)
+    response[zero] = float((CIC_DELAY * CIC_DECIMATION) ** CIC_STAGES)
+
+    numerator = np.sin(np.pi * CIC_DELAY * frequency[~zero] / FS_OUT)
+    denominator = np.sin(np.pi * frequency[~zero] / FS_IN)
+    response[~zero] = (numerator / denominator) ** CIC_STAGES
+    return response / response[0]
+
+
+def fir_response(taps, nfft):
+    """Return the FIR response on the positive-frequency FFT grid."""
+    response = np.fft.rfft(taps, n=nfft)
+    return response / response[0]
+
+
+def db(response):
+    return 20 * np.log10(np.maximum(np.abs(response), 1e-300))
+
+
+def first_crossing(frequency, magnitude_db, threshold=-3):
+    indices = np.flatnonzero(magnitude_db <= threshold)
+    return frequency[indices[0]] if indices.size else frequency[-1]
 
 
 def main():
-    print("=" * 70)
-    print("CIC + FIR Cascade Analysis (lock_in.v)")
-    print("=" * 70)
-    
-    print(f"\nCIC Decimator Configuration:")
-    print(f"  Stages (N):           {CIC_STAGES}")
-    print(f"  Differential delay:   {CIC_DELAY}")
-    print(f"  Decimation rate (R):  {CIC_DECIMATION}")
-    print(f"  Input sample rate:    {FS_IN/1e6:.3f} MHz")
-    print(f"  Output sample rate:   {FS_OUT:.3f} Hz ({FS_OUT/1e3:.3f} kHz)")
-    
-    # Load FIR coefficients
-    h_fir = load_coe_int_taps(COE_PATH)
-    print(f"\nFIR Filter: {len(h_fir)} taps")
-    
-    # Create frequency vector (0 to Nyquist of decimated rate)
-    nfft = 65536
-    f = np.linspace(0, FS_OUT / 2, nfft)
-    
-    # === CIC Response ===
-    H_cic = cic_response(f, FS_IN, CIC_STAGES, CIC_DELAY, CIC_DECIMATION)
-    H_cic_normalized = H_cic / H_cic[0]  # Normalize to 0 dB at DC
-    H_cic_db = 20 * np.log10(np.abs(H_cic_normalized) + 1e-300)
-    
-    # === FIR Response ===
-    # Use freqz-style computation
-    H_fir = np.zeros(len(f), dtype=complex)
-    for i, freq in enumerate(f):
-        # H(e^jw) = sum(h[n] * e^(-j*w*n))
-        w = 2 * np.pi * freq / FS_OUT
-        n = np.arange(len(h_fir))
-        H_fir[i] = np.sum(h_fir * np.exp(-1j * w * n))
-    
-    H_fir_normalized = H_fir / H_fir[0]  # Normalize to 0 dB at DC
-    H_fir_db = 20 * np.log10(np.abs(H_fir_normalized) + 1e-300)
-    
-    # === Combined Response ===
-    H_combined = H_cic_normalized * H_fir_normalized
-    H_combined_db = 20 * np.log10(np.abs(H_combined) + 1e-300)
-    
-    # Find -3 dB points
-    idx_fir = np.where(H_fir_db <= -3)[0]
-    fc_fir = f[idx_fir[0]] if len(idx_fir) else f[-1]
-    
-    idx_combined = np.where(H_combined_db <= -3)[0]
-    fc_combined = f[idx_combined[0]] if len(idx_combined) else f[-1]
-    
-    # CIC droop at 2 kHz
-    idx_2k = np.argmin(np.abs(f - 2000))
-    cic_droop_2k = H_cic_db[idx_2k]
-    fir_boost_2k = H_fir_db[idx_2k]
-    combined_2k = H_combined_db[idx_2k]
-    
-    print(f"\nAt 2 kHz:")
-    print(f"  CIC droop:       {cic_droop_2k:.2f} dB")
-    print(f"  FIR boost:       {fir_boost_2k:+.2f} dB")
-    print(f"  Combined:        {combined_2k:+.2f} dB")
-    
-    print(f"\n-3 dB cutoff:")
-    print(f"  FIR alone:       {fc_fir:.1f} Hz")
-    print(f"  CIC + FIR:       {fc_combined:.1f} Hz")
-    
-    # === Plot ===
-    print("\nGenerating plot...")
+    print("=" * 72)
+    print("Selectable 2 kHz FIR comparison, including the common CIC cascade")
+    print("=" * 72)
+    print(f"CIC: N={CIC_STAGES}, M={CIC_DELAY}, R={CIC_DECIMATION}")
+    print(f"Sample rates: {FS_IN / 1e6:.3f} MHz -> {FS_OUT / 1e3:.3f} kHz")
+
+    nfft = 131072
+    frequency = np.fft.rfftfreq(nfft, d=1 / FS_OUT)
+    angular_frequency = 2 * np.pi * frequency / FS_OUT
+    cic = cic_response(frequency)
+    cic_db = db(cic)
+
+    responses = {}
+    for label, path in COE_PATHS.items():
+        taps = load_coe_int_taps(path)
+        fir = fir_response(taps, nfft)
+        combined = cic * fir
+        phase_rad = np.unwrap(np.angle(fir))
+        step = np.cumsum(taps) / np.sum(taps)
+        responses[label] = {
+            "taps": taps,
+            "fir": fir,
+            "fir_db": db(fir),
+            "combined": combined,
+            "combined_db": db(combined),
+            "phase_deg": np.rad2deg(phase_rad),
+            "group_delay_samples": -np.gradient(phase_rad, angular_frequency),
+            "step": step,
+            "step_time_ms": np.arange(len(taps)) / FS_OUT * 1e3,
+        }
+        print(f"{label}: {len(taps)} taps from {path.name}")
+
+    index_2k = np.argmin(np.abs(frequency - 2000))
+    print(f"\nAt {frequency[index_2k]:.2f} Hz:")
+    print(f"  CIC magnitude: {cic_db[index_2k]:+.3f} dB")
+    for label, response in responses.items():
+        print(
+            f"  {label}: FIR {response['fir_db'][index_2k]:+.3f} dB, "
+            f"cascade {response['combined_db'][index_2k]:+.3f} dB, "
+            f"phase {response['phase_deg'][index_2k]:+.1f} deg"
+        )
+        print(
+            f"    -3 dB: FIR "
+            f"{first_crossing(frequency, response['fir_db']):.1f} Hz, cascade "
+            f"{first_crossing(frequency, response['combined_db']):.1f} Hz"
+        )
+        step_50_index = np.flatnonzero(response["step"] >= 0.5)[0]
+        print(
+            f"    group delay: {response['group_delay_samples'][0]:.2f} samples "
+            f"at DC, {response['group_delay_samples'][index_2k]:.2f} samples "
+            f"at 2 kHz; step 50% at {response['step_time_ms'][step_50_index]:.3f} ms, "
+            f"peak {np.max(response['step']):.3f}"
+        )
+
+    labels = list(responses)
+    passband = frequency <= 2000
+    fir_magnitude_delta = np.max(
+        np.abs(
+            responses[labels[0]]["fir_db"][passband]
+            - responses[labels[1]]["fir_db"][passband]
+        )
+    )
+    print(f"\nMaximum FIR magnitude mismatch from 0 to 2 kHz: "
+          f"{fir_magnitude_delta:.8f} dB")
+
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # --- Top Left: Full range ---
-    ax1 = axes[0, 0]
-    ax1.plot(f/1e3, H_cic_db, 'r-', lw=1.5, label='CIC (sinc^5 droop)', alpha=0.8)
-    ax1.plot(f/1e3, H_fir_db, 'b-', lw=1.5, label='FIR (LP + compensation)', alpha=0.8)
-    ax1.plot(f/1e3, H_combined_db, 'g-', lw=2, label='Combined (CIC + FIR)')
-    ax1.axhline(-3, color='gray', ls='--', lw=1, alpha=0.5)
-    ax1.set_xlabel('Frequency (kHz)', fontsize=11)
-    ax1.set_ylabel('Magnitude (dB)', fontsize=11)
-    ax1.set_title('Full Frequency Range (0 to Nyquist)', fontsize=12, fontweight='bold')
-    ax1.set_xlim(0, FS_OUT/2e3)
-    ax1.set_ylim(-80, 10)
-    ax1.legend(loc='upper right', fontsize=9)
-    ax1.grid(True, alpha=0.3)
-    
-    # --- Top Right: Passband zoom ---
-    ax2 = axes[0, 1]
-    ax2.plot(f, H_cic_db, 'r-', lw=1.5, label='CIC droop', alpha=0.8)
-    ax2.plot(f, H_fir_db, 'b-', lw=1.5, label='FIR (includes inv-sinc)', alpha=0.8)
-    ax2.plot(f, H_combined_db, 'g-', lw=2.5, label='Combined (flat!)')
-    ax2.axhline(-3, color='gray', ls='--', lw=1, alpha=0.5, label='-3 dB')
-    ax2.axhline(0, color='gray', ls='-', lw=0.5, alpha=0.5)
-    ax2.axvline(2000, color='purple', ls=':', lw=1, alpha=0.7, label='2 kHz')
-    ax2.set_xlabel('Frequency (Hz)', fontsize=11)
-    ax2.set_ylabel('Magnitude (dB)', fontsize=11)
-    ax2.set_title('Passband Detail (0-3 kHz)', fontsize=12, fontweight='bold')
-    ax2.set_xlim(0, 3000)
-    ax2.set_ylim(-10, 5)
-    ax2.legend(loc='lower left', fontsize=9)
-    ax2.grid(True, alpha=0.3)
-    
-    # Annotate droop compensation
-    ax2.annotate(f'CIC droop: {cic_droop_2k:.1f} dB', 
-                 xy=(2000, cic_droop_2k), xytext=(2200, cic_droop_2k-2),
-                 fontsize=9, color='red',
-                 arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
-    ax2.annotate(f'FIR boost: {fir_boost_2k:+.1f} dB', 
-                 xy=(2000, fir_boost_2k), xytext=(2200, fir_boost_2k+1.5),
-                 fontsize=9, color='blue',
-                 arrowprops=dict(arrowstyle='->', color='blue', lw=0.8))
-    
-    # --- Bottom Left: CIC response detail ---
-    ax3 = axes[1, 0]
-    # Show theoretical vs actual CIC
-    ax3.plot(f, H_cic_db, 'r-', lw=2, label=f'CIC: sinc^{CIC_STAGES}, M={CIC_DELAY}, R={CIC_DECIMATION}')
-    ax3.axhline(-3, color='gray', ls='--', lw=1, alpha=0.5)
-    ax3.set_xlabel('Frequency (Hz)', fontsize=11)
-    ax3.set_ylabel('Magnitude (dB)', fontsize=11)
-    ax3.set_title(f'CIC Decimator Response (N={CIC_STAGES}, M={CIC_DELAY}, R={CIC_DECIMATION})', 
-                  fontsize=12, fontweight='bold')
-    ax3.set_xlim(0, 5000)
-    ax3.set_ylim(-15, 2)
-    ax3.legend(loc='lower left', fontsize=9)
-    ax3.grid(True, alpha=0.3)
-    
-    # Mark key frequencies
-    for freq_hz in [500, 1000, 2000, 3000, 5000]:
-        if freq_hz <= 5000:
-            idx = np.argmin(np.abs(f - freq_hz))
-            droop = H_cic_db[idx]
-            ax3.plot(freq_hz, droop, 'ro', markersize=5)
-            ax3.annotate(f'{droop:.1f}dB', xy=(freq_hz, droop), 
-                        xytext=(freq_hz+100, droop+0.8), fontsize=8)
-    
-    # --- Bottom Right: Phase response ---
-    ax4 = axes[1, 1]
-    
-    phase_fir = np.unwrap(np.angle(H_fir))
-    phase_cic = np.unwrap(np.angle(H_cic_normalized))
-    phase_combined = np.unwrap(np.angle(H_combined))
-    
-    ax4.plot(f/1e3, phase_fir, 'b-', lw=1.5, label='FIR phase', alpha=0.8)
-    ax4.plot(f/1e3, phase_combined, 'g-', lw=2, label='Combined phase')
-    ax4.set_xlabel('Frequency (kHz)', fontsize=11)
-    ax4.set_ylabel('Phase (rad)', fontsize=11)
-    ax4.set_title('Phase Response', fontsize=12, fontweight='bold')
-    ax4.set_xlim(0, FS_OUT/2e3)
-    ax4.legend(loc='upper right', fontsize=9)
-    ax4.grid(True, alpha=0.3)
-    
-    fig.suptitle('lock_in.v: CIC Decimator + FIR Compensation Filter Analysis\n' +
-                 f'CIC: sinc^{CIC_STAGES} (M={CIC_DELAY}, R={CIC_DECIMATION}) | ' +
-                 f'FIR: {len(h_fir)} taps (LP + inv-sinc compensation)',
-                 fontsize=13, fontweight='bold', y=0.995)
-    
-    plt.tight_layout()
-    fig.savefig(OUT_PNG, dpi=170, bbox_inches='tight')
-    
+
+    colors = {
+        labels[0]: "#d97706",
+        labels[1]: "#0284c7",
+    }
+    styles = {labels[0]: "-", labels[1]: "--"}
+    figure, axes = plt.subplots(3, 2, figsize=(14, 13.5))
+
+    full_axis = axes[0, 0]
+    full_axis.plot(
+        frequency / 1e3,
+        cic_db,
+        color="0.45",
+        linestyle=":",
+        linewidth=1.4,
+        label="CIC magnitude",
+    )
+    for label, response in responses.items():
+        full_axis.plot(
+            frequency / 1e3,
+            response["combined_db"],
+            color=colors[label],
+            linestyle=styles[label],
+            linewidth=2,
+            label=f"CIC + {label}",
+        )
+    full_axis.set(
+        title="Cascade magnitude: full decimated Nyquist range",
+        xlabel="Frequency (kHz)",
+        ylabel="Magnitude (dB)",
+        xlim=(0, FS_OUT / 2e3),
+        ylim=(-100, 3),
+    )
+    full_axis.legend(loc="upper right", fontsize=8)
+    full_axis.grid(True, alpha=0.3)
+
+    cascade_axis = axes[0, 1]
+    cascade_axis.plot(
+        frequency,
+        cic_db,
+        color="0.45",
+        linestyle=":",
+        linewidth=1.4,
+        label="CIC magnitude",
+    )
+    for label, response in responses.items():
+        cascade_axis.plot(
+            frequency,
+            response["combined_db"],
+            color=colors[label],
+            linestyle=styles[label],
+            linewidth=2,
+            label=f"CIC + {label}",
+        )
+    cascade_axis.axvline(2000, color="0.4", linestyle=":", linewidth=1)
+    cascade_axis.axvline(2500, color="0.4", linestyle=":", linewidth=1)
+    cascade_axis.set(
+        title="Cascade magnitude: passband and transition",
+        xlabel="Frequency (Hz)",
+        ylabel="Magnitude (dB)",
+        xlim=(0, 3000),
+        ylim=(-25, 2),
+    )
+    cascade_axis.legend(loc="lower left", fontsize=8)
+    cascade_axis.grid(True, alpha=0.3)
+
+    fir_axis = axes[1, 0]
+    for label, response in responses.items():
+        fir_axis.plot(
+            frequency,
+            response["fir_db"],
+            color=colors[label],
+            linestyle=styles[label],
+            linewidth=2,
+            label=label,
+        )
+    fir_axis.axvline(2000, color="0.4", linestyle=":", linewidth=1)
+    fir_axis.axvline(2500, color="0.4", linestyle=":", linewidth=1)
+    fir_axis.set(
+        title="FIR magnitude comparison",
+        xlabel="Frequency (Hz)",
+        ylabel="Magnitude (dB, normalized at DC)",
+        xlim=(0, 5000),
+        ylim=(-80, 2),
+    )
+    fir_axis.legend(loc="lower left", fontsize=8)
+    fir_axis.grid(True, alpha=0.3)
+
+    phase_axis = axes[1, 1]
+    phase_range = frequency <= 2500
+    for label, response in responses.items():
+        phase_axis.plot(
+            frequency[phase_range],
+            response["phase_deg"][phase_range],
+            color=colors[label],
+            linestyle=styles[label],
+            linewidth=2,
+            label=label,
+        )
+    phase_axis.axvline(2000, color="0.4", linestyle=":", linewidth=1)
+    phase_axis.set(
+        title="FIR phase (common CIC phase/delay excluded)",
+        xlabel="Frequency (Hz)",
+        ylabel="Unwrapped phase (degrees)",
+        xlim=(0, 2500),
+    )
+    phase_axis.legend(loc="lower left", fontsize=8)
+    phase_axis.grid(True, alpha=0.3)
+
+    step_axis = axes[2, 0]
+    for label, response in responses.items():
+        step_axis.plot(
+            response["step_time_ms"],
+            response["step"],
+            color=colors[label],
+            linestyle=styles[label],
+            linewidth=2,
+            label=label,
+        )
+    step_axis.axhline(1, color="0.4", linestyle=":", linewidth=1)
+    step_axis.set(
+        title="Normalized FIR step response",
+        xlabel="Time after input step (ms)",
+        ylabel="Normalized output",
+        xlim=(0, (len(responses[labels[0]]["taps"]) - 1) / FS_OUT * 1e3),
+        ylim=(-0.15, 1.28),
+    )
+    step_axis.legend(loc="lower right", fontsize=8)
+    step_axis.grid(True, alpha=0.3)
+
+    delay_axis = axes[2, 1]
+    delay_range = frequency <= 2500
+    for label, response in responses.items():
+        delay_axis.plot(
+            frequency[delay_range],
+            response["group_delay_samples"][delay_range],
+            color=colors[label],
+            linestyle=styles[label],
+            linewidth=2,
+            label=label,
+        )
+    delay_axis.axvline(2000, color="0.4", linestyle=":", linewidth=1)
+    delay_axis.set(
+        title="FIR group delay (common CIC delay excluded)",
+        xlabel="Frequency (Hz)",
+        ylabel="Group delay (output samples)",
+        xlim=(0, 2500),
+        ylim=(0, 65),
+    )
+    delay_axis.secondary_yaxis(
+        "right",
+        functions=(lambda samples: samples / FS_OUT * 1e3,
+                   lambda milliseconds: milliseconds * FS_OUT / 1e3),
+    ).set_ylabel("Group delay (ms)")
+    delay_axis.legend(loc="lower right", fontsize=8)
+    delay_axis.grid(True, alpha=0.3)
+
+    figure.suptitle(
+        "lock_in.v selectable 2 kHz FIR filters: frequency and time response",
+        fontsize=13,
+    )
+    figure.tight_layout()
+    figure.savefig(OUT_PNG, dpi=170, bbox_inches="tight")
     print(f"\nSaved: {OUT_PNG}")
-    print("=" * 70)
+    print("=" * 72)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ module lock_in #(
 );
 
 localparam EXTEND_BITS_TO_32 = 32 - (DATA_WIDTH + LUTBITS);
+localparam [1:0] FILTER_2KHZ_MINIMUM_PHASE = 2'd0;
+localparam [1:0] FILTER_2KHZ_LINEAR_PHASE  = 2'd1;
 
 // Maximum positive value for signed LUTBITS-wide number: 2^(LUTBITS-1) - 1
 // Used as fixed reference when demodulation is bypassed (DC ODMR mode),
@@ -43,8 +45,8 @@ reg [1:0]  ref_select1;        // Channel 1: 0=sin, 1=cos, 2=sin_shifted, 3=cos_
 reg [1:0]  ref_select2;        // Channel 2: 0=sin, 1=cos, 2=sin_shifted, 3=cos_shifted
 reg        fir_bypass_ch1;     // Bypass FIR for channel 1 (use CIC output directly)
 reg        fir_bypass_ch2;     // Bypass FIR for channel 2 (use CIC output directly)
-reg [1:0]  filter_select_ch1;  // Channel 1 filter: 0=500Hz, 1=2kHz, 2=5kHz
-reg [1:0]  filter_select_ch2;  // Channel 2 filter: 0=500Hz, 1=2kHz, 2=5kHz
+reg [1:0]  filter_select_ch1;  // Channel 1: 0=2kHz minimum phase, 1=2kHz linear phase
+reg [1:0]  filter_select_ch2;  // Channel 2: 0=2kHz minimum phase, 1=2kHz linear phase
 reg        demod_bypass_ch1;   // Bypass demodulation for channel 1 (DC passthrough mode)
 reg        demod_bypass_ch2;   // Bypass demodulation for channel 2 (DC passthrough mode)
 
@@ -137,11 +139,16 @@ cic_decimate_by_4096 cic_decimate_instance_ch2 (
   .m_axis_data_tvalid(dec_m_axis_data_tvalid2)   // output wire m_axis_data_tvalid
 );
 
-// FIR lowpass outputs
-wire signed [31:0]  fir_2kHz_output1;
-wire signed [31:0]  fir_2kHz_output2;
-wire                fir_2kHz_valid1;
-wire                fir_2kHz_valid2;
+// Both FIRs run continuously from the same CIC output.  Selection therefore
+// does not reset or cold-start a filter, and aclken freezes both paths together.
+wire signed [31:0]  fir_2kHz_minphase_output1;
+wire signed [31:0]  fir_2kHz_minphase_output2;
+wire                fir_2kHz_minphase_valid1;
+wire                fir_2kHz_minphase_valid2;
+wire signed [31:0]  fir_2kHz_linear_raw_output1;
+wire signed [31:0]  fir_2kHz_linear_raw_output2;
+wire                fir_2kHz_linear_raw_valid1;
+wire                fir_2kHz_linear_raw_valid2;
 
 // FIR lowpass 2000Hz instance - Channel 1
 fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch1 (
@@ -150,8 +157,8 @@ fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch1 (
   .s_axis_data_tvalid(dec_m_axis_data_tvalid1),  // input wire s_axis_data_tvalid
   .s_axis_data_tready(),                         // output wire s_axis_data_tready
   .s_axis_data_tdata(decimator_output1),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_2kHz_valid1),          // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_2kHz_output1)           // output wire [31 : 0] m_axis_data_tdata
+  .m_axis_data_tvalid(fir_2kHz_minphase_valid1), // output wire m_axis_data_tvalid
+  .m_axis_data_tdata(fir_2kHz_minphase_output1)  // output wire [31 : 0] m_axis_data_tdata
 );
 
 // FIR lowpass 2000Hz instance - Channel 2
@@ -161,20 +168,85 @@ fir_lowpass_2000Hz fir_lowpass_2000Hz_inst_ch2 (
   .s_axis_data_tvalid(dec_m_axis_data_tvalid2),  // input wire s_axis_data_tvalid
   .s_axis_data_tready(),                         // output wire s_axis_data_tready
   .s_axis_data_tdata(decimator_output2),         // input wire [39 : 0] s_axis_data_tdata
-  .m_axis_data_tvalid(fir_2kHz_valid2),          // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(fir_2kHz_output2)           // output wire [31 : 0] m_axis_data_tdata
+  .m_axis_data_tvalid(fir_2kHz_minphase_valid2), // output wire m_axis_data_tvalid
+  .m_axis_data_tdata(fir_2kHz_minphase_output2)  // output wire [31 : 0] m_axis_data_tdata
 );
 
-// Select between the (2 kHz) FIR output and the truncated CIC output (bypass flag)
+// CIC-compensated 2 kHz linear-phase FIR - Channel 1
+fir_linear_phase_2000Hz fir_linear_phase_2000Hz_inst_ch1 (
+  .aclk(clk_i),
+  .aclken(aclken_i),
+  .s_axis_data_tvalid(dec_m_axis_data_tvalid1),
+  .s_axis_data_tready(),
+  .s_axis_data_tdata(decimator_output1),
+  .m_axis_data_tvalid(fir_2kHz_linear_raw_valid1),
+  .m_axis_data_tdata(fir_2kHz_linear_raw_output1)
+);
+
+// CIC-compensated 2 kHz linear-phase FIR - Channel 2
+fir_linear_phase_2000Hz fir_linear_phase_2000Hz_inst_ch2 (
+  .aclk(clk_i),
+  .aclken(aclken_i),
+  .s_axis_data_tvalid(dec_m_axis_data_tvalid2),
+  .s_axis_data_tready(),
+  .s_axis_data_tdata(decimator_output2),
+  .m_axis_data_tvalid(fir_2kHz_linear_raw_valid2),
+  .m_axis_data_tdata(fir_2kHz_linear_raw_output2)
+);
+
+// Restore the established minimum-phase raw gain after scaling the symmetric
+// coefficient set to the DSP48E1-native 18-bit width.
+wire signed [31:0] fir_2kHz_linear_output1;
+wire signed [31:0] fir_2kHz_linear_output2;
+wire               fir_2kHz_linear_valid1;
+wire               fir_2kHz_linear_valid2;
+
+fir_gain_compensation fir_gain_compensation_inst_ch1 (
+  .clk_i(clk_i),
+  .rstn_i(rstn_i),
+  .aclken_i(aclken_i),
+  .data_i(fir_2kHz_linear_raw_output1),
+  .data_valid_i(fir_2kHz_linear_raw_valid1),
+  .data_o(fir_2kHz_linear_output1),
+  .data_valid_o(fir_2kHz_linear_valid1)
+);
+
+fir_gain_compensation fir_gain_compensation_inst_ch2 (
+  .clk_i(clk_i),
+  .rstn_i(rstn_i),
+  .aclken_i(aclken_i),
+  .data_i(fir_2kHz_linear_raw_output2),
+  .data_valid_i(fir_2kHz_linear_raw_valid2),
+  .data_o(fir_2kHz_linear_output2),
+  .data_valid_o(fir_2kHz_linear_valid2)
+);
+
+// Value 0 is the reset/default minimum-phase path. Values 2 and 3 are reserved
+// and also safely fall back to minimum phase.
+wire signed [31:0] fir_selected_output1;
+wire signed [31:0] fir_selected_output2;
+wire               fir_selected_valid1;
+wire               fir_selected_valid2;
+
+assign fir_selected_output1 = (filter_select_ch1 == FILTER_2KHZ_LINEAR_PHASE) ?
+                              fir_2kHz_linear_output1 : fir_2kHz_minphase_output1;
+assign fir_selected_output2 = (filter_select_ch2 == FILTER_2KHZ_LINEAR_PHASE) ?
+                              fir_2kHz_linear_output2 : fir_2kHz_minphase_output2;
+assign fir_selected_valid1 = (filter_select_ch1 == FILTER_2KHZ_LINEAR_PHASE) ?
+                             fir_2kHz_linear_valid1 : fir_2kHz_minphase_valid1;
+assign fir_selected_valid2 = (filter_select_ch2 == FILTER_2KHZ_LINEAR_PHASE) ?
+                             fir_2kHz_linear_valid2 : fir_2kHz_minphase_valid2;
+
+// Select between the chosen FIR output and the truncated CIC output (bypass flag)
 wire signed [31:0] selected_output1;
 wire signed [31:0] selected_output2;
 wire               selected_valid1;
 wire               selected_valid2;
 
-assign selected_output1 = fir_bypass_ch1 ? decimator_output1_32bit : fir_2kHz_output1;
-assign selected_output2 = fir_bypass_ch2 ? decimator_output2_32bit : fir_2kHz_output2;
-assign selected_valid1  = fir_bypass_ch1 ? dec_m_axis_data_tvalid1 : fir_2kHz_valid1;
-assign selected_valid2  = fir_bypass_ch2 ? dec_m_axis_data_tvalid2 : fir_2kHz_valid2;
+assign selected_output1 = fir_bypass_ch1 ? decimator_output1_32bit : fir_selected_output1;
+assign selected_output2 = fir_bypass_ch2 ? decimator_output2_32bit : fir_selected_output2;
+assign selected_valid1  = fir_bypass_ch1 ? dec_m_axis_data_tvalid1 : fir_selected_valid1;
+assign selected_valid2  = fir_bypass_ch2 ? dec_m_axis_data_tvalid2 : fir_selected_valid2;
 
 // Output register assignment - Channel 1
 always @(posedge clk_i) begin
@@ -209,8 +281,8 @@ always @(posedge clk_i) begin
         ref_select2 <= 2'd1;     // Default: cos
         fir_bypass_ch1 <= 1'b0;  // Default: use FIR (bypass OFF)
         fir_bypass_ch2 <= 1'b0;  // Default: use FIR (bypass OFF)
-        filter_select_ch1 <= 2'd0; // Default: 500Hz
-        filter_select_ch2 <= 2'd0; // Default: 500Hz
+        filter_select_ch1 <= FILTER_2KHZ_MINIMUM_PHASE;
+        filter_select_ch2 <= FILTER_2KHZ_MINIMUM_PHASE;
         demod_bypass_ch1 <= 1'b0;  // Default: demodulation ON (lock-in mode)
         demod_bypass_ch2 <= 1'b0;  // Default: demodulation ON (lock-in mode)
     end else begin

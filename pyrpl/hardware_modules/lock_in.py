@@ -69,29 +69,31 @@ class LockIn(HardwareModule):
                                   default=False,
                                   doc="Bypass FIR lowpass filter for channel 2.")
 
-    # Filter selection for channel 1 (bits 7:6 of address 0x000)
+    # Filter selection for channel 1 (bits 7:6 of address 0x000).
+    # Raw value 0 is the default 2 kHz minimum-phase path. The legacy "2kHz"
+    # spelling remains an alias for that filter.
     filter_select_ch1 = SelectRegister(0x000,
                                        bitmask=0x3 << 6,  # Bits 7:6
-                                       options={'500Hz': 0 << 6,
-                                                '2kHz': 1 << 6,
-                                                '5kHz': 2 << 6},
-                                       default='2kHz',
-                                       doc="Channel 1 lowpass filter selection."
-                                           "500Hz: Bandwidth 500 Hz (CIC+FIR) "
-                                           "2kHz: Bandwidth 2 kHz (CIC+FIR). "
-                                           "5kHz: Bandwidth 5 kHz (CIC+FIR).")
+                                       options={'2kHz_minphase': 0 << 6,
+                                                '2kHz': 0 << 6,
+                                                '2kHz_linear': 1 << 6},
+                                       default='2kHz_minphase',
+                                       doc="Channel 1 CIC-compensated 2 kHz FIR selection. "
+                                           "2kHz_linear has constant group delay; "
+                                           "2kHz_minphase has the established low-latency phase response. "
+                                           "2kHz is a compatibility alias for 2kHz_minphase.")
 
     # Filter selection for channel 2 (bits 9:8 of address 0x000)
     filter_select_ch2 = SelectRegister(0x000,
                                        bitmask=0x3 << 8,  # Bits 9:8
-                                       options={'500Hz': 0 << 8,
-                                                '2kHz': 1 << 8,
-                                                '5kHz': 2 << 8},
-                                       default='2kHz',
-                                       doc="Channel 2 lowpass filter selection. "
-                                           "500Hz: Bandwidth 500 Hz (CIC+FIR)"
-                                           "2kHz: Bandwidth 2 kHz (CIC+FIR). "
-                                           "5kHz: Bandwidth 5 kHz (CIC+FIR).")
+                                       options={'2kHz_minphase': 0 << 8,
+                                                '2kHz': 0 << 8,
+                                                '2kHz_linear': 1 << 8},
+                                       default='2kHz_minphase',
+                                       doc="Channel 2 CIC-compensated 2 kHz FIR selection. "
+                                           "2kHz_linear has constant group delay; "
+                                           "2kHz_minphase has the established low-latency phase response. "
+                                           "2kHz is a compatibility alias for 2kHz_minphase.")
 
     # Demodulation bypass for channel 1 (bit 10 of address 0x000)
     demod_bypass_ch1 = BoolRegister(0x000,

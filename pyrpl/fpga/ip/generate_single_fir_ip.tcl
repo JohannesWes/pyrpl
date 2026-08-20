@@ -2,7 +2,7 @@
 # TCL script to generate a SINGLE FIR lowpass IP core
 #
 # Usage (called by generate_fir_ips.bat):
-#   vivado -mode batch -source generate_single_fir_ip.tcl -tclargs <coe_file> <ip_name>
+#   vivado -mode batch -source generate_single_fir_ip.tcl -tclargs <coe_file> <ip_name> ?<output_dir>? ?<coefficient_width>?
 #
 # This script is designed to be called in a fresh Vivado process for each IP
 # to avoid .Xil directory lock issues on Windows.
@@ -25,6 +25,14 @@ if {$argc > 2} {
     set output_base_dir [file dirname [info script]]
 }
 
+# DSP48E1 coefficients are normally 18 bits.  A wider value may be supplied
+# for a filter that needs it to preserve a shared fixed-point gain.
+if {$argc > 3} {
+    set coefficient_width [lindex $argv 3]
+} else {
+    set coefficient_width 18
+}
+
 set ip_dir [file join $output_base_dir $ip_name]
 
 # FPGA part (Red Pitaya uses Zynq 7010)
@@ -38,6 +46,7 @@ puts "============================================================"
 puts "Generating IP: $ip_name"
 puts "  Coefficient file: $coe_file"
 puts "  Output directory: $ip_dir"
+puts "  Coefficient width: $coefficient_width"
 puts "============================================================"
 
 # Remove existing IP directory if it exists
@@ -77,7 +86,7 @@ set_property -dict [list \
     CONFIG.Clock_Frequency {125} \
     CONFIG.Coefficient_Sign {Signed} \
     CONFIG.Quantization {Integer_Coefficients} \
-    CONFIG.Coefficient_Width {18} \
+    CONFIG.Coefficient_Width $coefficient_width \
     CONFIG.BestPrecision {false} \
     CONFIG.Coefficient_Fractional_Bits {0} \
     CONFIG.Coefficient_Structure {Inferred} \

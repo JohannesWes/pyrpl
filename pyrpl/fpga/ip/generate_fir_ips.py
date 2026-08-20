@@ -6,6 +6,12 @@ import time
 import sys
 import tempfile
 import stat
+import argparse
+
+
+# Per-core overrides are supported for future filters; all current filters fit
+# the native DSP48E1 18-bit coefficient input.
+FIR_COEFFICIENT_WIDTHS = {}
 
 def force_delete(action, name, exc):
     """Callback for shutil.rmtree to force delete read-only files."""
@@ -15,7 +21,8 @@ def force_delete(action, name, exc):
     except Exception:
         pass
 
-def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir, max_retries=2):
+def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir,
+                      max_retries=2, coefficient_width=18):
     """
     Generates a single IP using the Build-in-Temp strategy.
     
@@ -74,6 +81,8 @@ def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir, max_
             "-source", tcl_script, 
             "-tclargs", local_source_file, ip_name, build_tmp_dir
         ]
+        if not is_xci:
+            cmd.append(str(coefficient_width))
         
         try:
             # shell=True required for Windows Vivado execution
@@ -90,7 +99,7 @@ def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir, max_
             
             # Check if build succeeded in temp dir
             if os.path.exists(generated_dcp_path) and os.path.getsize(generated_dcp_path) > 10000:
-                print(f"  ✅ Build successful in temp dir.")
+                print("  Build successful in temp dir.")
                 
                 # Atomic-ish install
                 try:
@@ -120,12 +129,12 @@ def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir, max_
                     else:
                         shutil.move(generated_output_dir, final_ip_dir)
                     
-                    print(f"  ✅ Installed to: {final_ip_dir}")
+                    print(f"  Installed to: {final_ip_dir}")
                     return True
                 except Exception as move_err:
-                    print(f"  ❌ Move/Install failed: {move_err}")
+                    print(f"  Move/Install failed: {move_err}")
             else:
-                print(f"  ❌ Build failed. DCP missing in temp dir.")
+                print("  Build failed. DCP missing in temp dir.")
                 # Save log
                 fail_log_path = os.path.join(script_dir, f"vivado_fail_{ip_name}.log")
                 with open(fail_log_path, "w") as f:
@@ -139,7 +148,7 @@ def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir, max_
                         print("\n".join(result.stderr.splitlines()[-10:]))
 
         except Exception as e:
-            print(f"  ❌ EXCEPTION: {e}")
+            print(f"  EXCEPTION: {e}")
 
         # Cleanup
         try:
@@ -149,10 +158,17 @@ def process_single_ip(ip_name, source_file, tcl_script, is_xci, script_dir, max_
         
         time.sleep(2) # Brief pause before retry
 
-    print(f"  ⛔ FATAL: Failed to generate {ip_name}")
+    print(f"  FATAL: Failed to generate {ip_name}")
     return False
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Generate PyRPL FIR and CIC Vivado IP cores.")
+    parser.add_argument(
+        "--ip", action="append", dest="selected_ips", metavar="NAME",
+        help="Generate only this IP (repeatable). Default: generate all IPs.")
+    args = parser.parse_args()
+
     # Configuration
     script_dir = os.path.dirname(os.path.abspath(__file__))
     coef_dir = os.path.join(script_dir, "fir_filter_coefs")
@@ -178,7 +194,8 @@ def main():
             "name": ip_name,
             "source": coe,
             "tcl": fir_tcl_script,
-            "is_xci": False
+            "is_xci": False,
+            "coefficient_width": FIR_COEFFICIENT_WIDTHS.get(ip_name, 18),
         })
 
     # Extra IPs (XCI based)
@@ -193,10 +210,19 @@ def main():
                 "name": name,
                 "source": xci_path,
                 "tcl": xci_regen_script,
-                "is_xci": True
+                "is_xci": True,
+                "coefficient_width": None,
             })
         else:
             print(f"WARNING: XCI file for {name} not found at {xci_path}")
+
+    if args.selected_ips:
+        requested = set(args.selected_ips)
+        known = {task["name"] for task in tasks}
+        unknown = requested - known
+        if unknown:
+            parser.error("Unknown IP name(s): " + ", ".join(sorted(unknown)))
+        tasks = [task for task in tasks if task["name"] in requested]
 
     print(f"Found {len(tasks)} IPs to generate.")
     
@@ -211,7 +237,8 @@ def main():
             task["tcl"], 
             task["is_xci"], 
             script_dir, 
-            max_retries
+            max_retries,
+            task["coefficient_width"],
         ):
             success_count += 1
         else:
@@ -226,10 +253,10 @@ def main():
     print(f"  Failed   : {failure_count}")
     
     if failure_count == 0:
-        print("\n✅ All IPs are ready.")
+        print("\nAll IPs are ready.")
         sys.exit(0)
     else:
-        print("\n❌ Failure.")
+        print("\nGeneration failed.")
         sys.exit(1)
 
 if __name__ == "__main__":

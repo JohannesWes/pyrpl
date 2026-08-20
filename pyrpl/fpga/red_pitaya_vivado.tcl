@@ -67,6 +67,7 @@ generate_target all [get_files    system.bd]
 read_verilog                      .gen/sources_1/bd/system/hdl/system_wrapper.v
 read_ip                           $path_ip/fir_lowpass_500Hz/fir_lowpass_500Hz.xci
 read_ip                           $path_ip/fir_lowpass_2000Hz/fir_lowpass_2000Hz.xci
+read_ip                           $path_ip/fir_linear_phase_2000Hz/fir_linear_phase_2000Hz.xci
 read_ip                           $path_ip/fir_lowpass_5000Hz/fir_lowpass_5000Hz.xci
 read_ip                           $path_ip/cic_decimate_by_4096/cic_decimate_by_4096.xci
 
@@ -106,6 +107,7 @@ read_verilog                      $path_rtl/red_pitaya_prng.v
 read_verilog                      $path_rtl/red_pitaya_quarter_wave_lut.v
 read_verilog                      $path_rtl/red_pitaya_3fgen.v
 read_verilog                      $path_rtl/scan_new.v
+read_verilog                      $path_rtl/fir_gain_compensation.v
 read_verilog                      $path_rtl/lock_in.v
 read_verilog                      $path_rtl/odmr_freq_lock_1f.v
 read_verilog                      $path_rtl/red_pitaya_quarter_wave_lut17.v
@@ -115,6 +117,7 @@ read_verilog                      $path_rtl/odmr_multitrack.v
 read_xdc                          $path_sdc/red_pitaya.xdc
 read_xdc                          $path_ip/fir_lowpass_500Hz/constraints/fir_compiler_v7_2.xdc
 read_xdc                          $path_ip/fir_lowpass_2000Hz/constraints/fir_compiler_v7_2.xdc
+read_xdc                          $path_ip/fir_linear_phase_2000Hz/constraints/fir_compiler_v7_2.xdc
 read_xdc                          $path_ip/fir_lowpass_5000Hz/constraints/fir_compiler_v7_2.xdc
 read_xdc                          $path_ip/cic_decimate_by_4096/cic_decimate_by_4096_ooc.xdc
 
