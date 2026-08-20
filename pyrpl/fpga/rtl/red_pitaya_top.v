@@ -694,6 +694,10 @@ wire signed [31:0] demod_filtered_data1;
 wire               demod_filtered_tvalid1;
 wire signed [31:0] demod_filtered_data2;
 wire               demod_filtered_tvalid2;
+wire signed [31:0] demod_cic_data1;
+wire               demod_cic_tvalid1;
+wire signed [31:0] demod_cic_data2;
+wire               demod_cic_tvalid2;
 
 //---------------------------------------------------------------------------------
 //  Phase C: per-channel oscillator (region 9) + 2nd lock-in chain (region 10)
@@ -718,6 +722,10 @@ wire signed [31:0] demod1_filtered_data1;
 wire               demod1_filtered_tvalid1;
 wire signed [31:0] demod1_filtered_data2;
 wire               demod1_filtered_tvalid2;
+wire signed [31:0] demod1_cic_data1;
+wire               demod1_cic_tvalid1;
+wire signed [31:0] demod1_cic_data2;
+wire               demod1_cic_tvalid2;
 
 // Active resonance's demod (for the odmr error and the scan demod stream). When the
 // oscillator is inactive this is always chain 0 (legacy single-resonance behaviour).
@@ -727,13 +735,19 @@ wire               demod1_filtered_tvalid2;
 wire               use_ch1 = osc_active & osc_sel[0];
 reg  signed [31:0] active_demod_data1;
 reg                active_demod_tvalid1;
+reg  signed [31:0] active_cic_data1;
+reg                active_cic_tvalid1;
 always @(posedge adc_clk) begin
   if (!adc_rstn) begin
     active_demod_data1   <= 32'b0;
     active_demod_tvalid1 <= 1'b0;
+    active_cic_data1     <= 32'b0;
+    active_cic_tvalid1   <= 1'b0;
   end else begin
     active_demod_data1   <= use_ch1 ? demod1_filtered_data1   : demod_filtered_data1;
     active_demod_tvalid1 <= use_ch1 ? demod1_filtered_tvalid1 : demod_filtered_tvalid1;
+    active_cic_data1     <= use_ch1 ? demod1_cic_data1         : demod_cic_data1;
+    active_cic_tvalid1   <= use_ch1 ? demod1_cic_tvalid1       : demod_cic_tvalid1;
   end
 end
 
@@ -756,6 +770,8 @@ scan #(
     .iq_input_i    (inphase_iq_demod),
     .demod_input_i (active_demod_data1),           // active resonance's lock-in ch1
     .demod_input_valid_i (active_demod_tvalid1),
+    .cic_input_i   (active_cic_data1),             // same active chain, before FIR
+    .cic_input_valid_i (active_cic_tvalid1),
     .ftw_correction_i (ftw_correction),           // From ODMR freq lock
     .ftw_correction_valid_i (ftw_correction_valid),
 
@@ -844,6 +860,10 @@ lock_in #(
     .filtered_output1_valid_o (demod_filtered_tvalid1),
     .filtered_output2_o       (demod_filtered_data2),
     .filtered_output2_valid_o (demod_filtered_tvalid2),
+    .cic_output1_o            (demod_cic_data1),
+    .cic_output1_valid_o      (demod_cic_tvalid1),
+    .cic_output2_o            (demod_cic_data2),
+    .cic_output2_valid_o      (demod_cic_tvalid2),
 
     // System bus interface
     .sys_addr        (  sys_addr                   ),  // address
@@ -918,6 +938,10 @@ lock_in #(
     .filtered_output1_valid_o (demod1_filtered_tvalid1),
     .filtered_output2_o       (demod1_filtered_data2),
     .filtered_output2_valid_o (demod1_filtered_tvalid2),
+    .cic_output1_o            (demod1_cic_data1),
+    .cic_output1_valid_o      (demod1_cic_tvalid1),
+    .cic_output2_o            (demod1_cic_data2),
+    .cic_output2_valid_o      (demod1_cic_tvalid2),
 
     .sys_addr        (  sys_addr                   ),
     .sys_wdata       (  sys_wdata                  ),

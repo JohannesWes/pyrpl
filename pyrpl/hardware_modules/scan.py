@@ -257,6 +257,7 @@ ADDR_MARKER_Y_COUNT  = 0x3C  # total y markers written since reset
 # tick -> LSB bank, current_step -> MSB bank, at the shared hop ring index.
 ADDR_HOP_WR_PTR      = 0x40  # hop-marker ring write pointer (index in LSB/MSB BRAM)
 ADDR_HOP_COUNT       = 0x44  # total hop markers written since reset
+ADDR_STREAM_FORMAT   = 0x48  # words per self-describing stream sample (new FPGA: 4)
 BRAM_LSB_BASE_ADDR = 0x10000  # As per Verilog: Module Base + 0x10000
 BRAM_MSB_BASE_ADDR = 0x20000  # As per Verilog: Module Base + 0x20000
 BRAM_DATA3_BASE_ADDR = 0x30000 # As per Verilog: Module Base + 0x30000 (sample counts or stream data)
@@ -393,6 +394,21 @@ class Scan(HardwareModule):
                                       "'ftw_corr' for 32-bit FTW correction from ODMR tracker (stream only).")
 
     # ---------------- Streaming (32-bit @ ~31 kHz) ----------------
+    @property
+    def stream_words_per_sample(self):
+        """Self-describing stream record width reported by the FPGA.
+
+        New bitstreams report four words: ``[fir_error, correction, cic_error,
+        state]``.  Pre-CIC-stream bitstreams leave 0x48 unmapped and read as zero;
+        those are treated as the legacy three-word format for safe diagnostics.
+        """
+        value = int(self._read(ADDR_STREAM_FORMAT))
+        if value in (3, 4):
+            return value
+        logger.warning("FPGA does not report a recognised stream format at 0x48 "
+                       "(read %d); assuming legacy 3-word records.", value)
+        return 3
+
     def _stream_ctrl_write(self, enable=None, reset=False, marker=None, hop=None,
                            dual=None, marked=None):
         """Drive the streaming control register (``ADDR_STREAM_CONTROL``).
@@ -408,7 +424,7 @@ class Scan(HardwareModule):
         monitoring); 0 = disable. Mutually exclusive with bit 2 (both reuse the
         LSB/MSB marker banks).
         - bit 4 (``DUAL``): 1 = enable dual-quantity self-describing streaming
-        (writes [err, corr, step] triplets into the data3 ring per demod strobe,
+        (writes [err, corr, cic, step] records into the data3 ring per demod strobe,
         overriding INPUT_SELECT for the stream engine); 0 = legacy single-word.
         In dual mode the hop-marker ring is not needed (the step label is inline).
 
@@ -453,7 +469,7 @@ class Scan(HardwareModule):
         else:
             val |= 0x10 if dual else 0x0
         # bit 5 (MARKED): continuous uniform-rate dead-time-aware stream (writes
-        # [err, corr, state] triplets on a free-running /4096 tick; state = step when
+        # [err, corr, cic, state] records on a free-running /4096 tick; state = step when
         # live else DEAD sentinel). Mutually exclusive with DUAL (FPGA gives MARKED
         # priority); the step label is inline so no hop-marker ring is used.
         if marked is None:
@@ -923,7 +939,7 @@ class Scan(HardwareModule):
 
     # ---- x/y markers ON a self-describing (dual/marked) stream (2D multi-res scan) --
     # The multi-resonance tracker runs a continuous self-describing stream (dual or
-    # marked): [err, corr, step] triplets in the data3 ring, so the resonance label
+    # marked): [err, corr, cic, step] records in the data3 ring, so the resonance label
     # travels inline and the ram_lsb/ram_msb marker banks are FREE. A 2D motor scan
     # can therefore capture KDC x/y position markers in those free banks WHILE the
     # tracker keeps hopping -- the composition the "dedicated 4th bank" note
@@ -935,11 +951,19 @@ class Scan(HardwareModule):
     # engine, so the reset does not perturb the lock).
     #
     # NOTE on marker units: in dual/marked mode STREAM_SAMPLES -- and hence the marker
-    # values -- count WORDS (3 per [err, corr, step] triplet), not demod samples. Use
-    # :meth:`markers_to_triplet_index` (``w // 3``) to get the triplet (time-sample)
+    # values -- count WORDS (the width reported by ``stream_words_per_sample``), not
+    # demod samples. Use :meth:`markers_to_sample_index` to get the time-sample
     # index for slicing a reconstructed per-resonance trace. In single-word mapped
     # streaming (``mapped_stream_start`` with 'demod'/'ftw_corr') the markers are
     # already sample indices -- do NOT divide there.
+    @staticmethod
+    def markers_to_sample_index(markers, words_per_sample=4):
+        """Convert marker WORD indices to self-describing sample indices."""
+        width = int(words_per_sample)
+        if width not in (3, 4):
+            raise ValueError("words_per_sample must be 3 or 4")
+        return np.asarray(markers, dtype=np.int64) // width
+
     @staticmethod
     def markers_to_triplet_index(markers):
         """Convert x/y marker WORD indices to triplet (time-sample) indices.
@@ -982,7 +1006,7 @@ class Scan(HardwareModule):
         Args:
             input_source (str): 'ftw_corr' (per-resonance correction, the usual
                 monitoring quantity), 'demod' (per-resonance error), or 'dual'
-                (self-describing [err, corr, step] triplet stream for simultaneous
+                (self-describing [err, corr, cic, step] record stream for simultaneous
                 4-trace reconstruction; no hop-marker ring is used, the step label
                 is inline -- decode with :meth:`reconstruct_dual_hop_series`).
             poll_us, ring_bytes, coalesce_us, force_recompile: see
@@ -991,7 +1015,7 @@ class Scan(HardwareModule):
                 position markers in the (free) LSB/MSB banks for a 2D multi-resonance
                 motor scan. The reset aligns demod word 0 with the marker origin; read
                 the markers with :meth:`read_x_markers` / :meth:`read_y_markers` (WORD
-                indices; use :meth:`markers_to_triplet_index`).
+                indices; use :meth:`markers_to_sample_index`).
 
         Returns:
             StreamClient: the background push receiver.
@@ -1030,8 +1054,8 @@ class Scan(HardwareModule):
         self._dual_active = dual
         self._marked_active = marked
         # x/y position-marker read state (only active when want_xy). read_x_markers /
-        # read_y_markers gate on _mapped_active; the markers are WORD indices here
-        # (3 words/triplet) -- convert with markers_to_triplet_index.
+        # read_y_markers gate on _mapped_active; the markers are WORD indices here;
+        # convert with markers_to_sample_index using the FPGA-reported width.
         self._marker_x_rd_ptr = 0
         self._marker_x_total_read = 0
         self._marker_y_rd_ptr = 0
@@ -1263,12 +1287,13 @@ class Scan(HardwareModule):
         return out / FTW_PER_HZ if to_hz else out
 
     @classmethod
-    def reconstruct_dual_hop_series(cls, words, nslots=None, to_hz_corr=True):
+    def reconstruct_dual_hop_series(cls, words, nslots=None, to_hz_corr=True,
+                                    words_per_sample=3):
         """Reconstruct 4 per-resonance traces from a dual-quantity (self-describing)
         stream (FPGA STREAM_CONTROL[4]).
 
-        Dual mode writes three words per demod strobe into the data3 ring:
-        ``[err, corr, step]``. This reshapes the contiguous word stream to (-1, 3),
+        Current dual mode writes four words per demod strobe into the data3 ring:
+        ``[err, corr, cic, step]``. Legacy three-word records remain decodable.
         uses the inline ``step`` column to label each sample's resonance, and builds
         per-resonance error and correction traces with the same fresh-while-live +
         zero-order-hold semantics as :meth:`reconstruct_hop_series` (NaN reserved for
@@ -1278,24 +1303,28 @@ class Scan(HardwareModule):
         Args:
             words (np.ndarray): contiguous int32 words as float64 (NaN = transport
                 loss), index 0 = first word of the session. Concatenate every
-                :meth:`hop_stream_read` chunk. Trailing 1-2 words (an incomplete
-                triplet at the read boundary) are dropped.
+                :meth:`hop_stream_read` chunk. A trailing incomplete record is dropped.
             nslots (int): number of resonances N. Default: max finite step + 1.
             to_hz_corr (bool): convert the correction column from FTW to Hz.
 
         Returns:
-            dict: ``{'err': (N, T) float64 (raw LSB),
-                     'corr': (N, T) float64 (Hz if to_hz_corr else FTW)}`` where
-            T is the number of complete triplets received.
+            dict containing ``err``, ``corr``, and ``cic`` arrays of shape (N, T).
         """
         words = np.asarray(words, dtype=np.float64).ravel()
-        n3 = (words.size // 3) * 3
-        if n3 == 0:
+        width = int(words_per_sample)
+        if width not in (3, 4):
+            raise ValueError("words_per_sample must be 3 or 4")
+        usable = (words.size // width) * width
+        if usable == 0:
             z = np.full((int(nslots) if nslots else 1, 0), np.nan, dtype=np.float64)
-            return {'err': z, 'corr': z.copy()}
-        trip = words[:n3].reshape(-1, 3)
-        err_col, corr_col, step_raw = trip[:, 0], trip[:, 1], trip[:, 2]
-        T = trip.shape[0]
+            return {'err': z, 'corr': z.copy(), 'cic': z.copy()}
+        record = words[:usable].reshape(-1, width)
+        err_col, corr_col = record[:, 0], record[:, 1]
+        if width == 4:
+            cic_col, step_raw = record[:, 2], record[:, 3]
+        else:
+            cic_col, step_raw = np.full(record.shape[0], np.nan), record[:, 2]
+        T = record.shape[0]
 
         # The resonance label is piecewise-constant (one value per dwell), so a lost
         # step word is recovered by zero-order hold from the preceding sample.
@@ -1317,26 +1346,32 @@ class Scan(HardwareModule):
 
         out_err = np.full((nslots, T), np.nan, dtype=np.float64)
         out_corr = np.full((nslots, T), np.nan, dtype=np.float64)
+        out_cic = np.full((nslots, T), np.nan, dtype=np.float64)
         for r in range(nslots):
             live = (step_int == r)
             e = np.full(T, np.nan, dtype=np.float64); e[live] = err_col[live]
             c = np.full(T, np.nan, dtype=np.float64); c[live] = corr_col[live]
+            i = np.full(T, np.nan, dtype=np.float64); i[live] = cic_col[live]
             ef = cls._ffill(e)                       # ZOH across parked regions
             cf = cls._ffill(c)
+            inf = cls._ffill(i)
             ef[live & np.isnan(err_col)] = np.nan    # transport loss stays NaN
             cf[live & np.isnan(corr_col)] = np.nan
+            inf[live & np.isnan(cic_col)] = np.nan
             out_err[r] = ef
             out_corr[r] = cf
+            out_cic[r] = inf
         if to_hz_corr:
             out_corr = out_corr / FTW_PER_HZ
-        return {'err': out_err, 'corr': out_corr}
+        return {'err': out_err, 'corr': out_corr, 'cic': out_cic}
 
     @classmethod
-    def reconstruct_marked_series(cls, words, nslots=None, to_hz_corr=True):
+    def reconstruct_marked_series(cls, words, nslots=None, to_hz_corr=True,
+                                  words_per_sample=3):
         """Reconstruct per-resonance traces from the MARKED-continuous stream
         (FPGA STREAM_CONTROL[5]).
 
-        Marked mode writes a triplet ``[err, corr, state]`` on a FREE-RUNNING /4096
+        Current marked mode writes ``[err, corr, cic, state]`` on a FREE-RUNNING /4096
         tick -- one sample EVERY demod period regardless of the per-hop freeze. So
         unlike the dual stream (whose triplets are gated by the demod strobe, making
         the settle/hop dead-time zero-width in the word stream and corrupting the PC
@@ -1350,34 +1385,41 @@ class Scan(HardwareModule):
         Args:
             words (np.ndarray): contiguous int32-as-float64 stream (NaN = transport
                 loss), index 0 = first word of the session. Concatenate every
-                :meth:`hop_stream_read` chunk. Trailing 1-2 words (an incomplete
-                triplet at the read boundary) are dropped.
+                :meth:`hop_stream_read` chunk. A trailing incomplete record is dropped.
             nslots (int): number of resonances N. Default: max valid step + 1.
             to_hz_corr (bool): convert the correction column from FTW to Hz.
 
         Returns:
-            dict with (T = number of complete triplets = uniform samples at
+            dict with (T = number of complete records = uniform samples at
             FPGA_CLK_HZ/4096):
               - ``'err'``  (N, T) float64, raw LSB: the live error of resonance r at
                 samples where it is live, NaN elsewhere (dead OR another resonance OR
                 transport loss). Fresh-only (NO zero-order hold) so the dead-time is
                 explicit.
               - ``'corr'`` (N, T) float64, Hz (or FTW): live correction, same masking.
+              - ``'cic'``  (N, T) float64, raw pre-FIR CIC LSB, same masking.
               - ``'dead'`` (T,) bool: True where the sample is dead-time (settle/hop).
               - ``'step'`` (T,) int64: resonance index per sample, or -1 for dead/loss.
               - ``'sample_rate'`` float: FPGA_CLK_HZ/4096 (exact uniform rate).
         """
         words = np.asarray(words, dtype=np.float64).ravel()
-        n3 = (words.size // 3) * 3
+        width = int(words_per_sample)
+        if width not in (3, 4):
+            raise ValueError("words_per_sample must be 3 or 4")
+        usable = (words.size // width) * width
         fs = FPGA_CLK_HZ / 4096.0
-        if n3 == 0:
+        if usable == 0:
             z = np.full((int(nslots) if nslots else 1, 0), np.nan, dtype=np.float64)
-            return {'err': z, 'corr': z.copy(),
+            return {'err': z, 'corr': z.copy(), 'cic': z.copy(),
                     'dead': np.zeros(0, dtype=bool), 'step': np.zeros(0, dtype=np.int64),
                     'sample_rate': fs}
-        trip = words[:n3].reshape(-1, 3)
-        err_col, corr_col, state_raw = trip[:, 0], trip[:, 1], trip[:, 2]
-        T = trip.shape[0]
+        record = words[:usable].reshape(-1, width)
+        err_col, corr_col = record[:, 0], record[:, 1]
+        if width == 4:
+            cic_col, state_raw = record[:, 2], record[:, 3]
+        else:
+            cic_col, state_raw = np.full(record.shape[0], np.nan), record[:, 2]
+        T = record.shape[0]
 
         # A state word is a valid step iff it is a finite, non-negative integer below
         # nslots. The DEAD sentinel 0xFFFFFFFF surfaces as -1.0 (signed) or
@@ -1395,13 +1437,18 @@ class Scan(HardwareModule):
 
         out_err = np.full((nslots, T), np.nan, dtype=np.float64)
         out_corr = np.full((nslots, T), np.nan, dtype=np.float64)
+        out_cic = np.full((nslots, T), np.nan, dtype=np.float64)
         for r in range(nslots):
-            sel = (step_int == r) & np.isfinite(err_col)
-            out_err[r, sel] = err_col[sel]
-            out_corr[r, sel] = corr_col[sel]
+            live_r = (step_int == r)
+            err_sel = live_r & np.isfinite(err_col)
+            corr_sel = live_r & np.isfinite(corr_col)
+            out_err[r, err_sel] = err_col[err_sel]
+            out_corr[r, corr_sel] = corr_col[corr_sel]
+            cic_sel = live_r & np.isfinite(cic_col)
+            out_cic[r, cic_sel] = cic_col[cic_sel]
         if to_hz_corr:
             out_corr = out_corr / FTW_PER_HZ
-        return {'err': out_err, 'corr': out_corr, 'dead': dead,
+        return {'err': out_err, 'corr': out_corr, 'cic': out_cic, 'dead': dead,
                 'step': step_int, 'sample_rate': fs}
 
     @staticmethod

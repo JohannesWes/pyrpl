@@ -29,28 +29,28 @@
  *   - STREAM_CONTROL[4] enables dual-quantity mode (overrides INPUT_SELECT for the
  *     stream engine; the legacy single-word path is bypassed).
  *   - On each demod strobe (demod_input_valid_i; demod & ftw valids are coincident)
- *     THREE 32-bit words are written into the data3 ring on three consecutive clocks:
+ *     FOUR 32-bit words are written into the data3 ring on four consecutive clocks:
  *       word0 = demod_input_i   (live error,  the active resonance's lock-in ch1)
  *       word1 = ftw_correction_i(live correction, the active slot's FTW correction)
- *       word2 = current_step    (which resonance this sample belongs to, zero-extended)
- *     The 4096-clk strobe gap makes the 3-cycle burst trivially safe on the single
- *     write port. STREAM_SAMPLES counts WORDS (3 per strobe), matching the generic
+ *       word2 = cic_input_i     (same active chain immediately before its FIR)
+ *       word3 = current_step    (which resonance this sample belongs to, zero-extended)
+ *     The 4096-clk strobe gap makes the 4-cycle burst trivially safe on the single
+ *     write port. STREAM_SAMPLES counts WORDS (4 per strobe), matching the generic
  *     ARM word-drainer (stream_server.c is unchanged). The PC reshapes the drained
- *     word stream to (-1,3) and groups err/corr by the inline step column -> the
+ *     word stream to (-1,4) and groups the quantities by the inline step column -> the
  *     label travels with the value, so they can never desync (no hop-marker ring is
- *     needed in this mode; ram_lsb/ram_msb are unused). Triplets may straddle the
- *     ring wrap (4096 % 3 != 0); harmless, the PC reshapes the linear drained stream.
+ *     needed in this mode; ram_lsb/ram_msb are unused).
  *
  * Marked-continuous (uniform-rate, dead-time-aware) stream mode (STREAM_CONTROL[5]):
  *   - A NEW mode that emits a sample EVERY demod period (125 MHz / 4096 ~= 30.5 kHz)
  *     from a FREE-RUNNING /4096 tick, NOT from the aclken-gated demod strobe. So the
  *     word stream is a perfectly uniform time grid regardless of the per-hop freeze.
- *   - Same self-describing 3-word triplet layout as dual mode (so the ARM push server
- *     and ring plumbing are unchanged), but word2 carries a STATE tag instead of a
- *     plain step:
+ *   - Same self-describing 4-word layout as dual mode (so the ARM push server and
+ *     ring plumbing are unchanged), but word3 carries a STATE tag instead of a step:
  *       word0 = demod_input_i    (err; latched/sampled at the free tick)
  *       word1 = ftw_correction_i (corr; latched at the free tick)
- *       word2 = state            = current_step (zero-extended) when the sample is
+ *       word2 = cic_input_i      (pre-FIR CIC value at the same free tick)
+ *       word3 = state            = current_step (zero-extended) when the sample is
  *                                  LIVE (stream_live_i high), else DEAD = 32'hFFFFFFFF
  *                                  (= -1 as int32; cannot be a real step, survives the
  *                                  int32->float64 PC path unambiguously).
@@ -63,7 +63,7 @@
  *     disabled, stream_live_i is constant 1, so the mode degenerates to "all samples
  *     live, tagged current_step, no dead" (single-resonance backward compatibility).
  *   - Overrides dual mode (bit4) and INPUT_SELECT for the stream engine; the legacy
- *     single-word path and dual path are bypassed. STREAM_SAMPLES counts WORDS (3 per
+ *     single-word path and dual path are bypassed. STREAM_SAMPLES counts WORDS (4 per
  *     tick). Decode on the PC with scan.reconstruct_marked_series().
  *
  * Marker stream mode:
@@ -107,6 +107,7 @@
  *   0x3C MARKER_Y_COUNT       total y markers since reset
  *   0x40 HOP_WR_PTR           hop-marker ring write pointer
  *   0x44 HOP_COUNT            total hop markers since reset
+ *   0x48 STREAM_FORMAT        words per self-describing sample (4)
  *
  * Hop-marker stream mode (multi-resonance monitoring, Phase B-stream):
  *   - STREAM_CONTROL[3] enables hop-boundary marker capture while streaming.
@@ -153,6 +154,8 @@ module scan #(
     input wire signed [DATA_WIDTH_IQ-1:0]   iq_input_i,    // IQ demodulator input
     input wire signed [DATA_WIDTH_DEMOD-1:0] demod_input_i,     // Demodulated input (32-bit)
     input wire                          demod_input_valid_i,    // Valid signal for demodulated data
+    input wire signed [DATA_WIDTH_DEMOD-1:0] cic_input_i,       // Same demod chain, after CIC and before FIR
+    input wire                          cic_input_valid_i,      // Valid strobe for the CIC value
     input wire signed [DATA_WIDTH_DEMOD-1:0] ftw_correction_i,  // FTW correction from ODMR tracker
     input wire                          ftw_correction_valid_i,  // Valid signal for FTW correction
 
@@ -222,6 +225,8 @@ localparam ADDR_MARKER_Y_COUNT  = 20'h0003C; // R: total y markers written since
 // current_step edge -> (tick=stream sample idx in ram_lsb, step=current_step in ram_msb)
 localparam ADDR_HOP_WR_PTR      = 20'h00040; // R: hop-marker ring write pointer (mod BRAM depth)
 localparam ADDR_HOP_COUNT       = 20'h00044; // R: total hop markers written since last reset
+localparam ADDR_STREAM_FORMAT   = 20'h00048; // R: words per self-describing sample
+localparam [BUS_DATA_WIDTH-1:0] STREAM_WORDS_PER_SAMPLE = 32'd4;
 
 // Input selection values
 localparam INPUT_SELECT_ADC      = 2'b00;
@@ -278,25 +283,27 @@ reg [BRAM_ADDR_BITS-1:0]    reg_stream_wr_ptr;       // Write pointer into BRAM 
 reg [32-1:0]                reg_stream_sample_cnt;   // Total samples written since last stream reset (= WORDS in dual mode)
 
 // Dual-quantity (self-describing) stream mode (STREAM_CONTROL[4]). On each demod
-// strobe, three words [err, corr, step] are written to the data3 ring over three
+// strobe, four words [err, corr, cic, step] are written to the data3 ring over four
 // consecutive clocks via a tiny phase FSM. err is written directly from
-// demod_input_i on the strobe cycle; corr/step are latched then so cycles 1/2 do
+// demod_input_i on the strobe cycle; corr/cic/step are latched then so cycles 1..3 do
 // not depend on the inputs staying valid.
 reg                         reg_dual_quantity;       // Dual-quantity mode enable (level, STREAM_CONTROL[4])
-reg [1:0]                   dual_phase;              // 0=idle, 1=write corr next, 2=write step next
+reg [1:0]                   dual_phase;              // 0=idle, 1=corr, 2=cic, 3=step
 reg signed [DATA_WIDTH_DEMOD-1:0] dual_corr_lat;     // latched ftw_correction_i for word1
-reg [MAX_STEPS_BITS-1:0]    dual_step_lat;           // latched current_step for word2
+reg signed [DATA_WIDTH_DEMOD-1:0] dual_cic_lat;      // latched cic_input_i for word2
+reg [MAX_STEPS_BITS-1:0]    dual_step_lat;           // latched current_step for word3
 
 // Marked-continuous (uniform-rate, dead-time-aware) stream mode (STREAM_CONTROL[5]).
-// A free-running /4096 counter (NOT the aclken-gated demod strobe) drives the triplet
+// A free-running /4096 counter (NOT the aclken-gated demod strobe) drives the record
 // writer, so a sample is emitted every demod period regardless of the per-hop freeze.
-// word0=err (direct on tick), word1=corr (latched), word2=state (latched: current_step
-// when LIVE, else DEAD sentinel). Reuses the same 3-cycle phase-FSM pattern as dual.
+// word0=err (direct on tick), word1=corr, word2=cic, word3=state (all latched;
+// state is current_step when LIVE, else DEAD sentinel).
 reg                         reg_marked_continuous;   // Marked-continuous enable (level, STREAM_CONTROL[5])
 reg [DECIM_BITS-1:0]        marked_free_cnt;         // free-running /4096 sample tick counter
-reg [1:0]                   marked_phase;            // 0=idle, 1=write corr next, 2=write state next
+reg [1:0]                   marked_phase;            // 0=idle, 1=corr, 2=cic, 3=state
 reg signed [DATA_WIDTH_DEMOD-1:0] marked_corr_lat;   // latched ftw_correction_i for word1
-reg [BUS_DATA_WIDTH-1:0]    marked_state_lat;        // latched state word for word2 (step or DEAD sentinel)
+reg signed [DATA_WIDTH_DEMOD-1:0] marked_cic_lat;    // latched cic_input_i for word2
+reg [BUS_DATA_WIDTH-1:0]    marked_state_lat;        // latched state word for word3 (step or DEAD sentinel)
 localparam [BUS_DATA_WIDTH-1:0] MARKED_DEAD = 32'hFFFFFFFF; // DEAD tag (= -1 int32; not a valid step)
 
 // Position-marker streaming control/status (MODE 3)
@@ -350,24 +357,24 @@ wire hop_event = reg_stream_enable && reg_hop_marker_enable &&
                  (!hop_primed || (reg_current_step != hop_step_prev));
 
 // Dual-quantity write FSM helpers (combinational). dual_start fires on the strobe
-// when idle (writes word0=err that cycle); dual_phase 1/2 write word1/word2 on the
-// next two cycles. dual_wr is high on every cycle a triplet word is being written
+// when idle (writes word0=err that cycle); phases 1..3 write corr/cic/step.
+// dual_wr is high on every cycle a record word is being written
 // (drives the ptr/word-counter increment and the data3 write-enable).
 wire dual_mode  = reg_stream_enable && reg_dual_quantity;
 wire dual_start = dual_mode && demod_input_valid_i && (dual_phase == 2'd0);
-wire dual_wr    = dual_start || (dual_phase == 2'd1) || (dual_phase == 2'd2);
+wire dual_wr    = dual_start || (dual_phase != 2'd0);
 
 // Marked-continuous write FSM helpers (combinational). marked_mode takes priority
 // over dual mode. The free-running counter marked_free_cnt wraps every
 // DEMOD_DECIMATION_DIV clocks; marked_tick fires once per wrap (a uniform 30.5 kHz
 // cadence INDEPENDENT of the aclken-gated demod strobe, so dead-time is represented).
-// marked_start writes word0=err on the tick when idle; marked_phase 1/2 write
-// word1=corr / word2=state on the next two cycles. The 4096-clk gap makes the 3-cycle
+// marked_start writes word0=err on the tick when idle; phases 1..3 write
+// corr/cic/state. The 4096-clk gap makes the 4-cycle
 // burst trivially safe on the single write port.
 wire marked_mode  = reg_stream_enable && reg_marked_continuous;
 wire marked_tick  = marked_mode && (marked_free_cnt == {DECIM_BITS{1'b0}});
 wire marked_start = marked_tick && (marked_phase == 2'd0);
-wire marked_wr    = marked_start || (marked_phase == 2'd1) || (marked_phase == 2'd2);
+wire marked_wr    = marked_start || (marked_phase != 2'd0);
 
 // Counters
 reg [MAX_STEPS_BITS-1:0]    step_counter;
@@ -783,10 +790,10 @@ always @(posedge clk) begin
             reg_stream_active <= 1'b1;
             if (reg_marked_continuous) begin
                 // Marked-continuous mode (priority over dual): a free-running /4096
-                // counter drives the triplet writer, so a sample is emitted EVERY
+                // counter drives the record writer, so a sample is emitted EVERY
                 // demod period regardless of the per-hop freeze (uniform time grid).
                 // ptr/word-counter advance on every written word (STREAM_SAMPLES =
-                // WORDS = 3x ticks). corr/state are latched at the tick so cycles 1/2
+                // WORDS = 4x ticks). corr/cic/state are latched at the tick so later cycles
                 // are input-independent. state = current_step (LIVE, stream_live_i
                 // high) or DEAD sentinel (frozen / in settle).
                 marked_free_cnt <= (marked_free_cnt == DEMOD_DECIMATION_DIV - 1) ?
@@ -799,18 +806,20 @@ always @(posedge clk) begin
                     2'd0: if (marked_start) begin
                               marked_phase     <= 2'd1;
                               marked_corr_lat  <= ftw_correction_i;
+                              marked_cic_lat   <= cic_input_i;
                               marked_state_lat <= stream_live_i ?
                                   { {(BUS_DATA_WIDTH-MAX_STEPS_BITS){1'b0}}, reg_current_step } :
                                   MARKED_DEAD;
                           end
                     2'd1: marked_phase <= 2'd2;
-                    2'd2: marked_phase <= 2'd0;
+                    2'd2: marked_phase <= 2'd3;
+                    2'd3: marked_phase <= 2'd0;
                     default: marked_phase <= 2'd0;
                 endcase
             end else if (reg_dual_quantity) begin
-                // Dual-quantity mode: write three words [err, corr, step] per strobe
-                // over three consecutive cycles. ptr/word-counter advance on every
-                // written word (so STREAM_SAMPLES counts WORDS = 3x strobes). The data3
+                // Dual-quantity mode: write four words [err, corr, cic, step] per strobe
+                // over four consecutive cycles. ptr/word-counter advance on every
+                // written word (so STREAM_SAMPLES counts WORDS = 4x strobes). The data3
                 // write itself is in the unified write block; here we run the phase FSM
                 // and latch corr/step at the strobe so cycles 1/2 are input-independent.
                 if (dual_wr) begin
@@ -821,10 +830,12 @@ always @(posedge clk) begin
                     2'd0: if (dual_start) begin
                               dual_phase    <= 2'd1;
                               dual_corr_lat <= ftw_correction_i;
+                              dual_cic_lat  <= cic_input_i;
                               dual_step_lat <= reg_current_step;
                           end
                     2'd1: dual_phase <= 2'd2;
-                    2'd2: dual_phase <= 2'd0;
+                    2'd2: dual_phase <= 2'd3;
+                    2'd3: dual_phase <= 2'd0;
                     default: dual_phase <= 2'd0;
                 endcase
             end else begin
@@ -942,22 +953,24 @@ always @(*) begin
         data3_waddr_mux = bram_wr_addr;
         data3_wdata_mux = bram_wr_data_data3;
     end else if (marked_mode && marked_wr) begin
-        // Marked-continuous triplet: word0=err (tick cycle, direct from demod_input_i),
-        // word1=corr (latched), word2=state (latched: step or DEAD). One word per cycle
+        // Marked-continuous record: word0=err (tick cycle), word1=corr,
+        // word2=cic, word3=state (latched: step or DEAD). One word per cycle
         // at the running write pointer (advanced in lockstep in the streaming block).
         data3_we_mux    = 1'b1;
         data3_waddr_mux = reg_stream_wr_ptr;
         data3_wdata_mux = marked_start          ? demod_input_i[31:0] :
                           (marked_phase == 2'd1) ? marked_corr_lat[31:0] :
+                          (marked_phase == 2'd2) ? marked_cic_lat[31:0] :
                           marked_state_lat;
     end else if (dual_mode && dual_wr) begin
-        // Dual-quantity triplet: word0=err (strobe cycle, direct), word1=corr
-        // (latched), word2=step (latched, zero-extended). One word per cycle at the
+        // Dual-quantity record: word0=err (strobe cycle), word1=corr,
+        // word2=cic, word3=step (latched, zero-extended). One word per cycle at the
         // running write pointer, which advances in lockstep in the streaming block.
         data3_we_mux    = 1'b1;
         data3_waddr_mux = reg_stream_wr_ptr;
         data3_wdata_mux = dual_start          ? demod_input_i[31:0] :
                           (dual_phase == 2'd1) ? dual_corr_lat[31:0] :
+                          (dual_phase == 2'd2) ? dual_cic_lat[31:0] :
                           { {(BUS_DATA_WIDTH-MAX_STEPS_BITS){1'b0}}, dual_step_lat };
     end else if (stream_wr_en) begin
         data3_we_mux    = 1'b1;
@@ -1158,6 +1171,7 @@ always @(posedge clk) begin
             ADDR_MARKER_Y_COUNT:  begin sys_ack <= sys_en; sys_rdata <= reg_marker_y_count; end
             ADDR_HOP_WR_PTR:      begin sys_ack <= sys_en; sys_rdata <= { {(32-BRAM_ADDR_BITS){1'b0}}, reg_hop_wr_ptr }; end
             ADDR_HOP_COUNT:       begin sys_ack <= sys_en; sys_rdata <= reg_hop_count; end
+            ADDR_STREAM_FORMAT:   begin sys_ack <= sys_en; sys_rdata <= STREAM_WORDS_PER_SAMPLE; end
 
             // ---- BRAM banks (offsets 0x10000/0x20000/0x30000 -> addr[19:16]=1/2/3) ----
             // delayed ack aligned with the 4-cycle read pipeline; writes (never

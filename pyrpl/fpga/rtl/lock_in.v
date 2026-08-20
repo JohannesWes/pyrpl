@@ -20,6 +20,13 @@ module lock_in #(
     output reg signed [32-1:0]          filtered_output2_o,
     output reg                          filtered_output2_valid_o,
 
+    // CIC values immediately before the selectable FIR, using the same 32-bit
+    // truncation as the existing FIR-bypass path (40-bit CIC output [39:8]).
+    output wire signed [32-1:0]         cic_output1_o,
+    output wire                         cic_output1_valid_o,
+    output wire signed [32-1:0]         cic_output2_o,
+    output wire                         cic_output2_valid_o,
+
     // System bus interface
     input      [32-1:0]                 sys_addr,
     input      [32-1:0]                 sys_wdata,
@@ -116,6 +123,10 @@ wire signed [31:0]  decimator_output1_32bit;
 wire signed [31:0]  decimator_output2_32bit;
 assign decimator_output1_32bit = decimator_output1[39:8];
 assign decimator_output2_32bit = decimator_output2[39:8];
+assign cic_output1_o = decimator_output1_32bit;
+assign cic_output2_o = decimator_output2_32bit;
+assign cic_output1_valid_o = dec_m_axis_data_tvalid1 & aclken_i;
+assign cic_output2_valid_o = dec_m_axis_data_tvalid2 & aclken_i;
 
 // CIC decimator instance - Channel 1
 cic_decimate_by_4096 cic_decimate_instance_ch1 (
