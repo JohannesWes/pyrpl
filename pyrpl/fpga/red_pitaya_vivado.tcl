@@ -18,6 +18,15 @@ set path_sdk sdk
 
 file mkdir $path_out
 file mkdir $path_sdk
+if {$tcl_platform(platform) eq "windows"} {
+    file attributes $path_out -readonly 0
+    file attributes $path_sdk -readonly 0
+}
+
+# Vivado 2024.x on Windows can create read-only worker directories under .Xil
+# during parallel synthesis. Single-threaded mode avoids that worker-directory
+# failure and matches the IP-generation scripts in this repository.
+set_param general.maxThreads 1
 
 ################################################################################
 # setup an in memory project
